@@ -18,7 +18,7 @@ export function GalleryGrid({ cakes }: GalleryGridProps) {
           </h2>
           <Link
             href="/gallery"
-            className="bg-black px-6 py-3 text-sm uppercase tracking-widest text-white transition-colors hover:bg-neutral-800"
+            className="bg-warm-brown px-6 py-3 text-sm uppercase tracking-widest text-white transition-colors hover:bg-neutral-800"
           >
             SEE ALL CAKES
           </Link>
