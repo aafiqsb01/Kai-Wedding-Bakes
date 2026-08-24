@@ -53,9 +53,9 @@ export default function ContactPage() {
   }
 
   return (
-    <main className="min-h-screen bg-cream">
-      <div className="mx-auto max-w-7xl px-6 py-24">
-        <div className="grid grid-cols-1 items-start gap-16 md:grid-cols-2">
+    <main className="min-h-[calc(100vh-80px)] bg-cream flex flex-col justify-center">
+    <div className="mx-auto max-w-7xl px-6 py-16 md:py-20 w-full">
+      <div className="grid grid-cols-1 items-start gap-16 md:grid-cols-2">
           <div>
             <h1 className="text-5xl font-bold text-warm-brown">
               Submit your booking inquiry
