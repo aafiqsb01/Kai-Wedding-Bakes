@@ -1,47 +1,48 @@
-import * as LucideIcons from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
 import { Service } from '@/types';
 
 type ServicesSectionProps = {
   services: Service[];
 };
 
-function getIcon(name: string): LucideIcon | null {
-  const icon = LucideIcons[name as keyof typeof LucideIcons];
-  if (typeof icon === 'function' || (typeof icon === 'object' && icon !== null)) {
-    return icon as LucideIcon;
-  }
-  return null;
-}
-
 export function ServicesSection({ services }: ServicesSectionProps) {
   return (
-    <section className="mx-auto max-w-7xl px-4 py-16">
-      <h2 className="mb-4 text-3xl font-bold text-neutral-900">
-        Cakes for Every Celebration
-      </h2>
-      <p className="mb-12 text-lg text-neutral-600">
-        Grand Cakes, Small Weddings, and Everything In Between
-      </p>
-      <div className="grid grid-cols-1 gap-8 md:grid-cols-3">
-        {services.map((service) => {
-          const Icon = getIcon(service.icon);
+    <>
+      <section className="bg-stone-50">
+        <div className="mx-auto max-w-7xl px-6 py-20">
+          <div className="grid grid-cols-1 gap-16 md:grid-cols-3">
+            {services.map((service) => (
+              <div
+                key={service.id}
+                className="text-left md:border-r md:border-r-taupe/30 md:pr-8 md:last:border-r-0"
+              >
+                <h3 className="text-lg font-semibold text-warm-brown">
+                  {service.title}
+                </h3>
+                <p className="mt-4 text-sm leading-relaxed text-taupe">
+                  {service.description}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
 
-          return (
-            <div key={service.id} className="border-t-2 border-neutral-200 pt-6">
-              {Icon ? (
-                <Icon size={32} className="text-neutral-900" aria-hidden />
-              ) : null}
-              <h3 className="mt-4 text-xl font-semibold text-neutral-900">
-                {service.title}
-              </h3>
-              <p className="mt-3 text-sm text-neutral-600">
-                {service.description}
-              </p>
-            </div>
-          );
-        })}
-      </div>
-    </section>
+      <section className="bg-cream">
+        <div className="mx-auto max-w-3xl px-6 py-24 text-center">
+          <p className="mb-6 text-xs uppercase tracking-widest text-taupe">
+            CAKES FOR EVERY CELEBRATION
+          </p>
+          <h2 className="mb-8 text-5xl font-bold text-warm-brown">
+            Grand Cakes, Small Weddings, and Everything In Between
+          </h2>
+          <p className="text-base leading-relaxed text-taupe">
+            We offer dummy layers so you can have a tall, show-stopping cake
+            without the cost of feeding hundreds — perfect for smaller weddings.
+            We also create nikkah cakes, engagement cakes, and cupcakes in all
+            flavours, made to match your celebration.
+          </p>
+        </div>
+      </section>
+    </>
   );
 }

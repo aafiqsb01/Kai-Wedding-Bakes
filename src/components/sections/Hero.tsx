@@ -1,25 +1,26 @@
-import Link from 'next/link';
-import { Button } from '@/components/ui/Button';
-
 export function Hero() {
   return (
-    <section className="bg-white">
-      <div className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
-        <div className="relative flex h-96 items-center justify-center overflow-hidden bg-neutral-100">
-          <div className="relative z-10 mx-auto flex max-w-2xl flex-col items-center px-6 text-center">
-            <h1 className="text-4xl font-bold tracking-tight text-neutral-900 md:text-5xl">
+    <section className="bg-cream py-24">
+      <div className="mx-auto max-w-7xl px-6">
+        <div className="grid grid-cols-1 items-center gap-12 md:grid-cols-2">
+          <div className="text-left">
+            <h1 className="text-5xl font-bold leading-tight text-warm-brown md:text-6xl">
               Wedding Cakes Made to Celebrate You
             </h1>
-            <p className="mt-4 text-lg text-neutral-600 max-w-2xl">
+            <p className="mt-6 max-w-lg text-base text-taupe md:text-lg">
               Beautiful, bespoke wedding cakes for every kind of celebration —
               from intimate nikkah ceremonies and engagements to the big day
               itself.
             </p>
-            <div className="mt-8">
-              <Link href="/gallery">
-                <Button>See All Cakes</Button>
-              </Link>
-            </div>
+          </div>
+
+          <div className="h-96 min-h-96 overflow-hidden rounded-2xl bg-stone-200 md:h-full">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/images/hero.jpg"
+              alt="Wedding cake with cascading sugar flowers"
+              className="h-full w-full object-cover"
+            />
           </div>
         </div>
       </div>
