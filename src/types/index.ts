@@ -20,8 +20,7 @@ export interface Cake {
   export interface ContactFormData {
     name: string;
     email: string;
-    phone: string;
     eventDate: string;
-    // guestCount: number;
-    message: string;
+    venue: string;
+    enquiry: string;
   }

@@ -11,13 +11,17 @@ export function Button({
   children,
   ...props
 }: ButtonProps) {
+  const hasCustomBackground = className?.includes('bg-');
+
   return (
     <button
       className={cn(
         'inline-flex items-center justify-center px-6 py-3 text-sm font-medium transition-colors',
-        variant === 'primary' &&
+        !hasCustomBackground &&
+          variant === 'primary' &&
           'bg-neutral-900 text-white hover:bg-neutral-800',
-        variant === 'secondary' &&
+        !hasCustomBackground &&
+          variant === 'secondary' &&
           'border border-neutral-300 bg-white text-neutral-900 hover:bg-neutral-50',
         className,
       )}
