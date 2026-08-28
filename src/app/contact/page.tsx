@@ -28,7 +28,7 @@ export default function ContactPage() {
         <div className="grid grid-cols-1 items-start gap-16 md:grid-cols-2">
           <div>
             <h1 className="text-5xl font-bold text-warm-brown">
-              Submit your booking inquiry
+              Submit your booking enquiry
             </h1>
             <p className="mt-6 text-base leading-relaxed text-taupe">
               We accept a limited number of commissions each season. <br/>
