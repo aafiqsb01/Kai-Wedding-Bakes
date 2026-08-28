@@ -151,7 +151,7 @@ export function ContactForm() {
 
       <div className="mt-6">
         <label htmlFor="enquiry" className={labelClass}>
-          YOUR INQUIRY
+          YOUR ENQUIRY
         </label>
         <textarea
           id="enquiry"
