@@ -1,0 +1,109 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Opulence Wedding Bakes DB functions
+
+Globals:
+  Function:
+    Timeout: 60
+    MemorySize: 256
+    Runtime: nodejs18.x
+    Environment:
+      Variables:
+        AWS_DYNAMODB_TABLE_ENQUIRIES: opulence-wedding-bakes-enquiries
+        AWS_DYNAMODB_TABLE_GALLERY: opulence-wedding-bakes-gallery
+        AWS_S3_BUCKET_NAME: opulence-wedding-bakes-photos
+        CONTACT_FORM_RECIPIENT_EMAIL: opulenceweddingcakes@gmail.com
+
+Resources:
+
+  ContactFormHandlerFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        Minify: false
+        Target: es2020
+        Sourcemap: true
+        EntryPoints:
+          - functions/contact-form-handler/index.ts
+        External:
+          - aws-sdk
+
+    Properties:
+      FunctionName: opulence-contact-form-handler
+      CodeUri: aws
+      Handler: functions/contact-form-handler/index.handler
+      Runtime: nodejs18.x
+      Role: arn:aws:iam::640168417037:role/opulence-wedding-bakes-dbaccess-role
+
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: opulence-wedding-bakes-enquiries
+
+      Environment:
+        Variables:
+          AWS_DYNAMODB_TABLE_ENQUIRIES: opulence-wedding-bakes-enquiries
+          AWS_SECRETS_RESEND: opulence-wedding-bakes/resend-api
+
+      Events:
+        SubmitEnquiry:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ContactFormHttpApi
+            Path: /enquiries
+            Method: POST
+
+  ContactFormHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: $default
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowMethods:
+          - POST
+          - OPTIONS
+        AllowHeaders:
+          - content-type
+        MaxAge: 600
+
+  InstagramSyncFunction:
+    Type: AWS::Serverless::Function
+
+    Properties:
+      FunctionName: opulence-instagram-sync
+      CodeUri: aws
+      Handler: functions/instagram-sync/index.handler
+      Runtime: nodejs18.x
+      Role: arn:aws:iam::640168417037:role/opulence-wedding-bakes-dbaccess-role
+      Timeout: 300
+      MemorySize: 512
+
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: opulence-wedding-bakes-gallery
+
+        - S3CrudPolicy:
+            BucketName: opulence-wedding-bakes-photos
+
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - arn:aws:secretsmanager:eu-west-2:640168417037:secret:opulence-wedding-bakes/instagram-*
+
+      Environment:
+        Variables:
+          AWS_DYNAMODB_TABLE_GALLERY: opulence-wedding-bakes-gallery
+          AWS_S3_BUCKET_NAME: opulence-wedding-bakes-photos
+
+Outputs:
+
+  ContactFormApiUrl:
+    Description: API Gateway HTTP API URL for POST /enquiries
+    Value: !Sub
+      - "${ApiEndpoint}/enquiries"
+      - ApiEndpoint: !GetAtt ContactFormHttpApi.ApiEndpoint
