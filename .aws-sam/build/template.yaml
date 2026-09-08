@@ -39,25 +39,35 @@ Resources:
       Environment:
         Variables:
           AWS_DYNAMODB_TABLE_ENQUIRIES: opulence-wedding-bakes-enquiries
+          AWS_SECRETS_RESEND: opulence-wedding-bakes/resend-api
           NODE_OPTIONS: ' --enable-source-maps'
+      Events:
+        SubmitEnquiry:
+          Type: HttpApi
+          Properties:
+            ApiId:
+              Ref: ContactFormHttpApi
+            Path: /enquiries
+            Method: POST
+  ContactFormHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: $default
+      CorsConfiguration:
+        AllowOrigins:
+        - '*'
+        AllowMethods:
+        - POST
+        - OPTIONS
+        AllowHeaders:
+        - content-type
+        MaxAge: 600
   InstagramSyncFunction:
     Type: AWS::Serverless::Function
-    Metadata:
-      BuildMethod: esbuild
-      BuildProperties:
-        EntryPoints:
-        - functions/instagram-sync/index.ts
-        External:
-        - aws-sdk
-        Format: cjs
-        Minify: false
-        Sourcemap: true
-        Target: es2020
-      SamResourceId: InstagramSyncFunction
     Properties:
       FunctionName: opulence-instagram-sync
       CodeUri: InstagramSyncFunction
-      Handler: index.handler
+      Handler: functions/instagram-sync/index.handler
       Runtime: nodejs18.x
       Role: arn:aws:iam::640168417037:role/opulence-wedding-bakes-dbaccess-role
       Timeout: 300
@@ -67,8 +77,26 @@ Resources:
           TableName: opulence-wedding-bakes-gallery
       - S3CrudPolicy:
           BucketName: opulence-wedding-bakes-photos
+      - Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - secretsmanager:GetSecretValue
+          Resource:
+          - arn:aws:secretsmanager:eu-west-2:640168417037:secret:opulence-wedding-bakes/instagram-*
       Environment:
         Variables:
           AWS_DYNAMODB_TABLE_GALLERY: opulence-wedding-bakes-gallery
           AWS_S3_BUCKET_NAME: opulence-wedding-bakes-photos
-          NODE_OPTIONS: ' --enable-source-maps'
+    Metadata:
+      SamResourceId: InstagramSyncFunction
+Outputs:
+  ContactFormApiUrl:
+    Description: API Gateway HTTP API URL for POST /enquiries
+    Value:
+      Fn::Sub:
+      - ${ApiEndpoint}/enquiries
+      - ApiEndpoint:
+          Fn::GetAtt:
+          - ContactFormHttpApi
+          - ApiEndpoint

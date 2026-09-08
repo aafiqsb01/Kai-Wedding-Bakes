@@ -24,7 +24,14 @@ External = ["aws-sdk"]
 
 
 
-[function_build_definitions.4953d4cd-0f8f-4a13-82de-37c099327b8b]
+
+
+
+
+
+
+
+[function_build_definitions.54ccae8f-15b3-47b0-b8bc-5dfa2cee386b]
 codeuri = "/Users/aafiqbukhari/Documents/Code Projects/Kai-Wedding-Bakes/aws"
 runtime = "nodejs18.x"
 architecture = "x86_64"
@@ -32,20 +39,5 @@ handler = "functions/instagram-sync/index.handler"
 manifest_hash = ""
 packagetype = "Zip"
 functions = ["InstagramSyncFunction"]
-
-[function_build_definitions.4953d4cd-0f8f-4a13-82de-37c099327b8b.metadata]
-BuildMethod = "esbuild"
-
-[function_build_definitions.4953d4cd-0f8f-4a13-82de-37c099327b8b.metadata.BuildProperties]
-Format = "cjs"
-Minify = false
-Target = "es2020"
-Sourcemap = true
-EntryPoints = ["functions/instagram-sync/index.ts"]
-External = ["aws-sdk"]
-
-
-
-
 
 [layer_build_definitions]

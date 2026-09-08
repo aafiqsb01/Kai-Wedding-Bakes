@@ -7879,9 +7879,9 @@ __export(serde_exports, {
   toHex: () => toHex,
   toUint8Array: () => toUint8Array,
   toUtf8: () => toUtf8,
-  v4: () => v42
+  v4: () => v4
 });
-var import_node_crypto3, Uint8ArrayBlobAdapter, _getRandomValues, v42, generateIdempotencyToken;
+var import_node_crypto3, Uint8ArrayBlobAdapter, _getRandomValues, v4, generateIdempotencyToken;
 var init_serde = __esm({
   "node_modules/@smithy/core/dist-es/submodules/serde/index.js"() {
     import_node_crypto3 = require("node:crypto");
@@ -7923,8 +7923,8 @@ var init_serde = __esm({
     Uint8ArrayBlobAdapter = class extends bindUint8ArrayBlobAdapter(toUtf8, fromUtf8, toBase64, fromBase64) {
     };
     _getRandomValues = import_node_crypto3.getRandomValues;
-    v42 = bindV4(_getRandomValues);
-    generateIdempotencyToken = v42;
+    v4 = bindV4(_getRandomValues);
+    generateIdempotencyToken = v4;
   }
 });
 
@@ -11053,7 +11053,7 @@ function bindRetryMiddleware(isStreamingPayload2) {
       const { request } = args;
       const isRequest = HttpRequest.isInstance(request);
       if (isRequest) {
-        request.headers[INVOCATION_ID_HEADER] = v42();
+        request.headers[INVOCATION_ID_HEADER] = v4();
       }
       while (true) {
         try {
@@ -11630,7 +11630,7 @@ var init_StandardRetryStrategy2 = __esm({
         const maxAttempts = await this.getMaxAttempts();
         const { request } = args;
         if (HttpRequest.isInstance(request)) {
-          request.headers[INVOCATION_ID_HEADER] = v42();
+          request.headers[INVOCATION_ID_HEADER] = v4();
         }
         while (true) {
           try {
@@ -32485,7 +32485,7 @@ var require_dist_cjs19 = __commonJS({
     ];
     var DescribeEndpointsCommand = class extends command5(_ep05, _mw05, "DescribeEndpoints", DescribeEndpoints$) {
     };
-    var version2 = "3.1125.0";
+    var version2 = "3.1126.0";
     var packageInfo = {
       version: version2
     };
@@ -35375,7 +35375,7 @@ var require_dist_cjs22 = __commonJS({
       Region: { type: "builtInParams", name: "region" },
       UseDualStack: { type: "builtInParams", name: "useDualstackEndpoint" }
     };
-    var version2 = "3.1125.0";
+    var version2 = "3.1126.0";
     var packageInfo = {
       version: version2
     };
@@ -37088,6 +37088,7 @@ __export(index_exports, {
   handler: () => handler
 });
 module.exports = __toCommonJS(index_exports);
+var import_crypto = require("crypto");
 
 // node_modules/postal-mime/src/decode-strings.js
 var textEncoder = new TextEncoder();
@@ -42267,50 +42268,6 @@ var Resend = class {
   }
 };
 
-// node_modules/uuid/dist-node/stringify.js
-var byteToHex = [];
-for (let i5 = 0; i5 < 256; ++i5) {
-  byteToHex.push((i5 + 256).toString(16).slice(1));
-}
-function unsafeStringify(arr, offset = 0) {
-  return (byteToHex[arr[offset + 0]] + byteToHex[arr[offset + 1]] + byteToHex[arr[offset + 2]] + byteToHex[arr[offset + 3]] + "-" + byteToHex[arr[offset + 4]] + byteToHex[arr[offset + 5]] + "-" + byteToHex[arr[offset + 6]] + byteToHex[arr[offset + 7]] + "-" + byteToHex[arr[offset + 8]] + byteToHex[arr[offset + 9]] + "-" + byteToHex[arr[offset + 10]] + byteToHex[arr[offset + 11]] + byteToHex[arr[offset + 12]] + byteToHex[arr[offset + 13]] + byteToHex[arr[offset + 14]] + byteToHex[arr[offset + 15]]).toLowerCase();
-}
-
-// node_modules/uuid/dist-node/rng.js
-var rnds8 = new Uint8Array(16);
-function rng() {
-  return crypto.getRandomValues(rnds8);
-}
-
-// node_modules/uuid/dist-node/v4.js
-function v4(options, buf2, offset) {
-  if (!buf2 && !options && crypto.randomUUID) {
-    return crypto.randomUUID();
-  }
-  return _v4(options, buf2, offset);
-}
-function _v4(options, buf2, offset) {
-  options = options || {};
-  const rnds = options.random ?? options.rng?.() ?? rng();
-  if (rnds.length < 16) {
-    throw new Error("Random bytes length must be >= 16");
-  }
-  rnds[6] = rnds[6] & 15 | 64;
-  rnds[8] = rnds[8] & 63 | 128;
-  if (buf2) {
-    offset = offset || 0;
-    if (offset < 0 || offset + 16 > buf2.length) {
-      throw new RangeError(`UUID byte range ${offset}:${offset + 15} is out of buffer bounds`);
-    }
-    for (let i5 = 0; i5 < 16; ++i5) {
-      buf2[offset + i5] = rnds[i5];
-    }
-    return buf2;
-  }
-  return unsafeStringify(rnds);
-}
-var v4_default = v4;
-
 // config/database.ts
 var import_client_dynamodb = __toESM(require_dist_cjs19());
 var import_lib_dynamodb = __toESM(require_dist_cjs21());
@@ -42363,20 +42320,54 @@ async function getResendApiKey() {
 }
 
 // functions/contact-form-handler/index.ts
+var CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "content-type",
+  "Access-Control-Allow-Methods": "POST,OPTIONS",
+  "Content-Type": "application/json"
+};
+function jsonResponse(statusCode, payload2) {
+  return {
+    statusCode,
+    headers: CORS_HEADERS,
+    body: JSON.stringify(payload2)
+  };
+}
+function parseRequestBody(event) {
+  let rawBody = event.body;
+  if (rawBody == null) {
+    throw new Error("Missing request body");
+  }
+  if (event.isBase64Encoded && typeof rawBody === "string") {
+    rawBody = Buffer.from(rawBody, "base64").toString("utf8");
+  }
+  return typeof rawBody === "string" ? JSON.parse(rawBody) : rawBody;
+}
 var handler = async (event) => {
   console.log("\u{1F4E7} Contact form handler Lambda started");
   console.log("Event:", JSON.stringify(event, null, 2));
+  const method = event.requestContext?.http?.method || event.httpMethod || event.requestContext?.httpMethod;
+  if (method === "OPTIONS") {
+    return jsonResponse(204, {});
+  }
   try {
-    const body = typeof event.body === "string" ? JSON.parse(event.body) : event.body;
-    const formData = body;
+    const formData = parseRequestBody(event);
     if (!formData.name || !formData.email || !formData.eventDate || !formData.venue || !formData.enquiry) {
       console.warn("\u274C Missing required fields");
-      return {
-        statusCode: 400,
-        body: JSON.stringify({ error: "Missing required fields" })
-      };
+      return jsonResponse(400, { error: "Missing required fields" });
     }
-    const enquiryId = v4_default();
+    let enquiryId;
+    try {
+      enquiryId = (0, import_crypto.randomUUID)();
+      fetch("http://127.0.0.1:7624/ingest/4a5b035c-2516-4325-be36-20d27c93f202", { method: "POST", headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "d995f0" }, body: JSON.stringify({ sessionId: "d995f0", runId: "post-fix", hypothesisId: "A", location: "contact-form-handler/index.ts:enquiryId", message: "randomUUID succeeded", data: { enquiryIdPrefix: enquiryId.slice(0, 8), hasCryptoGlobal: typeof globalThis.crypto !== "undefined" }, timestamp: Date.now() }) }).catch(() => {
+      });
+      console.log(JSON.stringify({ sessionId: "d995f0", hypothesisId: "A", message: "randomUUID succeeded", enquiryIdPrefix: enquiryId.slice(0, 8) }));
+    } catch (cryptoErr) {
+      fetch("http://127.0.0.1:7624/ingest/4a5b035c-2516-4325-be36-20d27c93f202", { method: "POST", headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "d995f0" }, body: JSON.stringify({ sessionId: "d995f0", runId: "post-fix", hypothesisId: "A", location: "contact-form-handler/index.ts:enquiryId", message: "randomUUID failed", data: { error: cryptoErr instanceof Error ? cryptoErr.message : String(cryptoErr) }, timestamp: Date.now() }) }).catch(() => {
+      });
+      console.error(JSON.stringify({ sessionId: "d995f0", hypothesisId: "A", message: "randomUUID failed", error: cryptoErr instanceof Error ? cryptoErr.message : String(cryptoErr) }));
+      throw cryptoErr;
+    }
     const now = (/* @__PURE__ */ new Date()).toISOString();
     const enquiry = {
       enquiryId,
@@ -42395,22 +42386,16 @@ var handler = async (event) => {
     await sendConfirmationEmail(formData.email, formData.name);
     console.log(`\u{1F4EC} Sending notification email to business`);
     await sendNotificationEmail(enquiry);
-    return {
-      statusCode: 200,
-      body: JSON.stringify({
-        message: "\u2705 Enquiry received successfully",
-        enquiryId
-      })
-    };
+    return jsonResponse(200, {
+      message: "\u2705 Enquiry received successfully",
+      enquiryId
+    });
   } catch (error2) {
     console.error("\u274C Contact form handler failed:", error2);
-    return {
-      statusCode: 500,
-      body: JSON.stringify({
-        error: "Failed to process enquiry",
-        details: error2 instanceof Error ? error2.message : String(error2)
-      })
-    };
+    return jsonResponse(500, {
+      error: "Failed to process enquiry",
+      details: error2 instanceof Error ? error2.message : String(error2)
+    });
   }
 };
 async function sendConfirmationEmail(customerEmail, customerName) {
