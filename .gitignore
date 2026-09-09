@@ -20,6 +20,9 @@
 # production
 /build
 
+# AWS SAM build artifacts
+.aws-sam/
+
 # misc
 .DS_Store
 *.pem

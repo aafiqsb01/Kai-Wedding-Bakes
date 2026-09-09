@@ -1,4 +1,11 @@
-export function Hero() {
+type HeroProps = {
+  imageUrl?: string;
+};
+
+export function Hero({ imageUrl }: HeroProps) {
+  const src =
+    imageUrl?.trim() || "/images/hero.jpg";
+
   return (
     <section className="bg-cream py-24">
       <div className="mx-auto max-w-7xl px-6">
@@ -14,13 +21,15 @@ export function Hero() {
             </p>
           </div>
 
-          <div className="h-96 min-h-96 overflow-hidden rounded-2xl bg-stone-200 md:h-full">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src="/images/hero.jpg"
-              alt="Wedding cake with cascading sugar flowers"
-              className="h-full w-full object-cover"
-            />
+          <div className="flex justify-center md:justify-end md:items-center">
+            <div className="w-[68%] max-w-sm sm:max-w-md md:max-w-[22rem]">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={src}
+                alt="White wedding cake with cascading red roses"
+                className="block h-auto w-full rounded-2xl object-contain"
+              />
+            </div>
           </div>
         </div>
       </div>
