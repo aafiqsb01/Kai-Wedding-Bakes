@@ -18,18 +18,17 @@ Resources:
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
+        Format: cjs
+        Minify: false
+        Target: es2020
+        Sourcemap: true
         EntryPoints:
         - functions/contact-form-handler/index.ts
         External:
         - aws-sdk
-        Format: cjs
-        Minify: false
-        Sourcemap: true
-        Target: es2020
-      SamResourceId: ContactFormHandlerFunction
     Properties:
       FunctionName: opulence-contact-form-handler
-      CodeUri: ContactFormHandlerFunction
+      CodeUri: ../../aws
       Handler: index.handler
       Runtime: nodejs18.x
       Role: arn:aws:iam::640168417037:role/opulence-wedding-bakes-dbaccess-role
@@ -64,10 +63,22 @@ Resources:
         MaxAge: 600
   InstagramSyncFunction:
     Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+        - functions/instagram-sync/index.ts
+        External:
+        - aws-sdk
+        Format: cjs
+        Minify: false
+        Sourcemap: true
+        Target: es2020
+      SamResourceId: InstagramSyncFunction
     Properties:
       FunctionName: opulence-instagram-sync
       CodeUri: InstagramSyncFunction
-      Handler: functions/instagram-sync/index.handler
+      Handler: index.handler
       Runtime: nodejs18.x
       Role: arn:aws:iam::640168417037:role/opulence-wedding-bakes-dbaccess-role
       Timeout: 300
@@ -91,8 +102,7 @@ Resources:
           AWS_SECRETS_INSTAGRAM: opulence-wedding-bakes/instagram-access-token
           INSTAGRAM_BUSINESS_ACCOUNT_ID:
             Fn::Sub: '{{resolve:secretsmanager:opulence-wedding-bakes/instagram-account-id:SecretString}}'
-    Metadata:
-      SamResourceId: InstagramSyncFunction
+          NODE_OPTIONS: ' --enable-source-maps'
 Outputs:
   ContactFormApiUrl:
     Description: API Gateway HTTP API URL for POST /enquiries
