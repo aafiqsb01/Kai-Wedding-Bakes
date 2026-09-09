@@ -99,6 +99,8 @@ Resources:
         Variables:
           AWS_DYNAMODB_TABLE_GALLERY: opulence-wedding-bakes-gallery
           AWS_S3_BUCKET_NAME: opulence-wedding-bakes-photos
+          AWS_SECRETS_INSTAGRAM: opulence-wedding-bakes/instagram-access-token
+          INSTAGRAM_BUSINESS_ACCOUNT_ID: !Sub '{{resolve:secretsmanager:opulence-wedding-bakes/instagram-account-id:SecretString}}'
 
 Outputs:
 

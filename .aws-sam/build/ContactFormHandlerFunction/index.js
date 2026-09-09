@@ -32485,7 +32485,7 @@ var require_dist_cjs19 = __commonJS({
     ];
     var DescribeEndpointsCommand = class extends command5(_ep05, _mw05, "DescribeEndpoints", DescribeEndpoints$) {
     };
-    var version2 = "3.1126.0";
+    var version2 = "3.1127.0";
     var packageInfo = {
       version: version2
     };
@@ -35375,7 +35375,7 @@ var require_dist_cjs22 = __commonJS({
       Region: { type: "builtInParams", name: "region" },
       UseDualStack: { type: "builtInParams", name: "useDualstackEndpoint" }
     };
-    var version2 = "3.1126.0";
+    var version2 = "3.1127.0";
     var packageInfo = {
       version: version2
     };

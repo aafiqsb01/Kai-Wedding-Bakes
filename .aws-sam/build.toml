@@ -31,6 +31,7 @@ External = ["aws-sdk"]
 
 
 
+
 [function_build_definitions.54ccae8f-15b3-47b0-b8bc-5dfa2cee386b]
 codeuri = "/Users/aafiqbukhari/Documents/Code Projects/Kai-Wedding-Bakes/aws"
 runtime = "nodejs18.x"
