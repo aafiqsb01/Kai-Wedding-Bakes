@@ -1,6 +1,6 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { awsCredentialsProvider } from "@vercel/functions/oidc";
+import { awsCredentialsProvider } from "@vercel/oidc-aws-credentials-provider";
 
 const region = process.env.AWS_REGION || "eu-west-2";
 
