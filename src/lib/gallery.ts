@@ -1,21 +1,27 @@
 import { ScanCommand } from "@aws-sdk/lib-dynamodb";
 import type { Cake } from "@/types";
 import { docClient, GALLERY_TABLE } from "@/lib/dynamodb";
+import { formatProductTypeLabel } from "@/lib/product-type";
 
 const CLOUDFRONT_BASE = "https://d2zp5rpt2x30su.cloudfront.net";
 
 type DynamoProductType =
   | "wedding-cake"
   | "nikah-cake"
+  | "nikkah-cake"
   | "cupcakes"
   | "biscuits"
+  | "brownies"
   | "engagement-cake";
 
 interface DynamoGalleryItem {
   photoId: string;
+  backupUrl?: string;
   instagramUrl?: string;
   caption?: string;
   productType?: DynamoProductType | string;
+  likes?: number | null;
+  syncedAt?: string;
 }
 
 function mapProductTypeToCategory(
@@ -23,6 +29,7 @@ function mapProductTypeToCategory(
 ): Cake["category"] {
   switch (productType) {
     case "nikah-cake":
+    case "nikkah-cake":
       return "nikkah cake";
     case "cupcakes":
       return "cupcakes";
@@ -30,36 +37,53 @@ function mapProductTypeToCategory(
       return "engagement cake";
     case "wedding-cake":
     case "biscuits":
+    case "brownies":
     default:
       return "wedding cake";
   }
 }
 
-function titleFromProductType(productType: string | undefined): string {
-  switch (productType) {
-    case "nikah-cake":
-      return "Nikkah Cake";
-    case "cupcakes":
-      return "Cupcakes";
-    case "engagement-cake":
-      return "Engagement Cake";
-    case "biscuits":
-      return "Biscuits";
-    case "wedding-cake":
-    default:
-      return "Wedding Cake";
+/**
+ * Derive the S3 object key from backupUrl (private S3 URL) so we can
+ * serve the same object via CloudFront. Never return the raw S3 URL.
+ */
+function getObjectKeyFromBackupUrl(backupUrl: string): string | null {
+  try {
+    const { pathname } = new URL(backupUrl);
+    const key = pathname.replace(/^\/+/, "").trim();
+    return key || null;
+  } catch {
+    return null;
   }
 }
 
+function resolveImageUrl(item: DynamoGalleryItem): string {
+  const fromBackup = item.backupUrl?.trim()
+    ? getObjectKeyFromBackupUrl(item.backupUrl.trim())
+    : null;
+
+  const objectKey =
+    fromBackup ?? `instagram/2026/${item.photoId}.jpg`;
+
+  return `${CLOUDFRONT_BASE.replace(/\/+$/, "")}/${objectKey}`;
+}
+
 function mapGalleryItemToCake(item: DynamoGalleryItem): Cake {
+  const productType = item.productType?.trim() || undefined;
+
   return {
     id: item.photoId,
-    title: titleFromProductType(item.productType),
-    category: mapProductTypeToCategory(item.productType),
-    imageUrl: `${CLOUDFRONT_BASE}/instagram/2026/${item.photoId}.jpg`,
+    title: formatProductTypeLabel(productType),
+    category: mapProductTypeToCategory(productType),
+    imageUrl: resolveImageUrl(item),
     description: item.caption ?? "",
     instagramUrl: item.instagramUrl,
     tags: [],
+    productType,
+    likes: typeof item.likes === "number" && !Number.isNaN(item.likes)
+      ? item.likes
+      : 0,
+    syncedAt: item.syncedAt,
   };
 }
 
@@ -81,7 +105,7 @@ export async function getGalleryCakes(): Promise<Cake[]> {
       .filter((item) => Boolean(item.photoId))
       .map(mapGalleryItemToCake);
   } catch (error) {
-    console.error("Failed to load gallery items from DynamoDB" + error);
+    console.error("Failed to load gallery items from DynamoDB", error);
     if (error instanceof Error) {
       console.error(error.name);
     }
