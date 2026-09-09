@@ -70,11 +70,22 @@ Resources:
 
   InstagramSyncFunction:
     Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        Minify: false
+        Target: es2020
+        Sourcemap: true
+        EntryPoints:
+          - functions/instagram-sync/index.ts
+        External:
+          - aws-sdk
 
     Properties:
       FunctionName: opulence-instagram-sync
       CodeUri: aws
-      Handler: functions/instagram-sync/index.handler
+      Handler: index.handler
       Runtime: nodejs18.x
       Role: arn:aws:iam::640168417037:role/opulence-wedding-bakes-dbaccess-role
       Timeout: 300
