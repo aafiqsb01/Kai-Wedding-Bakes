@@ -2,7 +2,11 @@ import { Handler } from "aws-lambda";
 import fetch from "node-fetch";
 import { getInstagramToken, getInstagramAccountId } from "../../config/secrets";
 import { uploadPhotoToS3 } from "../../config/storage";
-import { saveGalleryItem, DynamoGalleryItem } from "../../config/database";
+import {
+  saveGalleryItem,
+  DynamoGalleryItem,
+  DynamoGalleryMedia,
+} from "../../config/database";
 
 // ============================================
 // Instagram Graph API Types
@@ -19,6 +23,16 @@ interface InstagramMedia {
   permalink: string;
 }
 
+interface InstagramChildMedia {
+  id: string;
+  media_type: "IMAGE" | "VIDEO";
+  media_url?: string;
+}
+
+interface InstagramChildrenResponse {
+  data: InstagramChildMedia[];
+}
+
 interface InstagramResponse {
   data: InstagramMedia[];
   paging?: {
@@ -33,7 +47,7 @@ interface InstagramResponse {
 // Lambda Handler
 // ============================================
 
-export const handler: Handler = async (event: any) => {
+export const handler: Handler = async () => {
   console.log("🎂 Instagram sync Lambda started");
 
   try {
@@ -96,6 +110,26 @@ async function fetchInstagramMedia(accountId: string, token: string): Promise<In
 }
 
 /**
+ * Fetch child media items for a CAROUSEL_ALBUM post
+ */
+async function fetchCarouselChildren(
+  mediaId: string,
+  token: string
+): Promise<InstagramChildMedia[]> {
+  const url = `https://graph.instagram.com/v18.0/${mediaId}/children?fields=id,media_type,media_url&access_token=${token}`;
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(
+      `Instagram API error fetching carousel children for ${mediaId}: ${response.statusText}`
+    );
+  }
+
+  const data = (await response.json()) as InstagramChildrenResponse;
+  return data.data || [];
+}
+
+/**
  * Download media from Instagram URL
  */
 async function downloadMediaFromUrl(url: string): Promise<Buffer> {
@@ -104,6 +138,33 @@ async function downloadMediaFromUrl(url: string): Promise<Buffer> {
     throw new Error(`Failed to download media: ${response.statusText}`);
   }
   return Buffer.from(await response.arrayBuffer());
+}
+
+/**
+ * Stable S3 object key matching uploadPhotoToS3 conventions.
+ */
+function buildS3Key(photoId: string): string {
+  return `instagram/${new Date().getFullYear()}/${photoId}.jpg`;
+}
+
+/**
+ * Download an image and upload it to S3 using the existing key convention.
+ */
+async function downloadAndUploadImage(
+  mediaId: string,
+  mediaUrl: string
+): Promise<DynamoGalleryMedia> {
+  console.log(`⬇️  Downloading media: ${mediaId}`);
+  const imageBuffer = await downloadMediaFromUrl(mediaUrl);
+
+  console.log(`☁️  Uploading to S3: ${mediaId}`);
+  const s3Url = await uploadPhotoToS3(mediaId, imageBuffer, "image/jpeg");
+
+  return {
+    mediaId,
+    s3Key: buildS3Key(mediaId),
+    url: s3Url,
+  };
 }
 
 /**
@@ -128,10 +189,92 @@ function mapToProductType(
 }
 
 /**
+ * Process a CAROUSEL_ALBUM post as a single gallery item with multiple media assets.
+ * If any child image fails to download/upload, the whole carousel fails (no Dynamo write).
+ */
+async function processCarouselAlbum(
+  media: InstagramMedia,
+  instagramToken: string
+): Promise<void> {
+  console.log(`🎠 Processing carousel album: ${media.id}`);
+
+  const children = await fetchCarouselChildren(media.id, instagramToken);
+  if (children.length === 0) {
+    throw new Error(`Carousel ${media.id} has no child media`);
+  }
+
+  const mediaAssets: DynamoGalleryMedia[] = [];
+
+  for (const child of children) {
+    if (child.media_type !== "IMAGE") {
+      console.log(
+        `⏭️  Skipping ${child.media_type} carousel child: ${child.id} (parent ${media.id})`
+      );
+      continue;
+    }
+
+    if (!child.media_url) {
+      throw new Error(
+        `Carousel child ${child.id} (parent ${media.id}) has no media_url`
+      );
+    }
+
+    try {
+      const asset = await downloadAndUploadImage(child.id, child.media_url);
+      mediaAssets.push(asset);
+    } catch (error) {
+      console.error(
+        `❌ Failed to process carousel child ${child.id} (parent ${media.id}):`,
+        error
+      );
+      throw new Error(
+        `Carousel ${media.id} incomplete: child ${child.id} failed — ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+  }
+
+  if (mediaAssets.length === 0) {
+    throw new Error(
+      `Carousel ${media.id} has no IMAGE children to sync`
+    );
+  }
+
+  const productType = mapToProductType(media.caption);
+  const cover = mediaAssets[0];
+
+  console.log(`💾 Saving carousel to DynamoDB: ${media.id} (${mediaAssets.length} images)`);
+  const galleryItem: DynamoGalleryItem = {
+    photoId: media.id,
+    backupUrl: cover.url,
+    instagramUrl: media.permalink,
+    caption: media.caption || "",
+    productType,
+    likes: media.like_count || 0,
+    syncedAt: new Date().toISOString(),
+    mediaType: "CAROUSEL_ALBUM",
+    media: mediaAssets,
+  };
+
+  await saveGalleryItem(galleryItem);
+  console.log(`✅ Processed carousel: ${media.id} → ${productType} (${mediaAssets.length} images)`);
+}
+
+/**
  * Process a single Instagram media item
  */
 async function processInstagramMedia(media: InstagramMedia, instagramToken: string): Promise<void> {
-  // Skip videos for now (handle only images)
+  if (media.media_type === "VIDEO") {
+    console.log(`⏭️  Skipping VIDEO media: ${media.id}`);
+    return;
+  }
+
+  if (media.media_type === "CAROUSEL_ALBUM") {
+    await processCarouselAlbum(media, instagramToken);
+    return;
+  }
+
   if (media.media_type !== "IMAGE") {
     console.log(`⏭️  Skipping ${media.media_type} media: ${media.id}`);
     return;
@@ -141,27 +284,20 @@ async function processInstagramMedia(media: InstagramMedia, instagramToken: stri
     throw new Error("No media_url found");
   }
 
-  // Download image from Instagram
-  console.log(`⬇️  Downloading media: ${media.id}`);
-  const imageBuffer = await downloadMediaFromUrl(media.media_url);
-
-  // Upload to S3
-  console.log(`☁️  Uploading to S3: ${media.id}`);
-  const s3Url = await uploadPhotoToS3(media.id, imageBuffer, "image/jpeg");
-
-  // Determine product type (placeholder logic)
+  const uploaded = await downloadAndUploadImage(media.id, media.media_url);
   const productType = mapToProductType(media.caption);
 
-  // Save to DynamoDB
+  // Save to DynamoDB — keep legacy single-image shape (backupUrl only)
   console.log(`💾 Saving to DynamoDB: ${media.id}`);
   const galleryItem: DynamoGalleryItem = {
     photoId: media.id,
-    backupUrl: s3Url,
+    backupUrl: uploaded.url,
     instagramUrl: media.permalink,
     caption: media.caption || "",
     productType,
     likes: media.like_count || 0,
     syncedAt: new Date().toISOString(),
+    mediaType: "IMAGE",
   };
 
   await saveGalleryItem(galleryItem);

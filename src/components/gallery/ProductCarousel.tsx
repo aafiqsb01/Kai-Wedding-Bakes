@@ -1,8 +1,9 @@
 "use client";
 
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import type { Cake } from "@/types";
+import { GalleryPostModal } from "@/components/gallery/GalleryPostModal";
 
 type ProductCarouselProps = {
   label: string;
@@ -11,6 +12,7 @@ type ProductCarouselProps = {
 
 export function ProductCarousel({ label, items }: ProductCarouselProps) {
   const scrollerRef = useRef<HTMLDivElement>(null);
+  const [selected, setSelected] = useState<Cake | null>(null);
 
   if (items.length === 0) {
     return null;
@@ -58,40 +60,42 @@ export function ProductCarousel({ label, items }: ProductCarouselProps) {
         {items.map((item) => {
           if (!item.imageUrl) return null;
 
-          const image = (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={item.imageUrl}
-              alt={label}
-              className="aspect-[3/4] h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.03]"
-              loading="lazy"
-            />
-          );
-
-          const frameClass =
-            "group relative block h-64 w-44 shrink-0 snap-start overflow-hidden rounded-xl bg-stone-200 sm:h-72 sm:w-52 md:h-80 md:w-56";
-
-          if (item.instagramUrl) {
-            return (
-              <a
-                key={item.id}
-                href={item.instagramUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className={frameClass}
-              >
-                {image}
-              </a>
-            );
-          }
+          const isCarousel =
+            (item.imageUrls?.length ?? 0) > 1 ||
+            item.mediaType === "CAROUSEL_ALBUM";
 
           return (
-            <div key={item.id} className={frameClass}>
-              {image}
-            </div>
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setSelected(item)}
+              className="group relative block h-64 w-44 shrink-0 snap-start overflow-hidden rounded-xl bg-stone-200 text-left sm:h-72 sm:w-52 md:h-80 md:w-56"
+              aria-label={
+                isCarousel
+                  ? `Open ${label} carousel post`
+                  : `Open ${label} post`
+              }
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={item.imageUrl}
+                alt={label}
+                className="aspect-[3/4] h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.03]"
+                loading="lazy"
+              />
+            </button>
           );
         })}
       </div>
+
+      {selected ? (
+        <GalleryPostModal
+          key={selected.id}
+          item={selected}
+          open
+          onClose={() => setSelected(null)}
+        />
+      ) : null}
     </section>
   );
 }

@@ -34,17 +34,32 @@ export interface DynamoEnquiry {
 }
 
 /**
+ * A single media asset belonging to a gallery item (e.g. carousel child).
+ */
+export interface DynamoGalleryMedia {
+  mediaId: string; // Instagram child media ID (or parent ID for single images)
+  s3Key: string;
+  url: string; // S3 object URL
+}
+
+/**
  * Gallery item record in DynamoDB
  * Synced from Instagram via Lambda
+ *
+ * Legacy single-image items only have backupUrl (no media / mediaType).
+ * Carousel albums store media[] while still setting backupUrl to the first
+ * image so existing readers keep working.
  */
 export interface DynamoGalleryItem {
     photoId: string;                    // PK: Instagram media ID
     instagramUrl: string;               // Original Instagram URL
-    backupUrl: string;                      // S3 backup URL
+    backupUrl: string;                  // S3 backup URL (cover / first image)
     caption: string;
     productType: "wedding-cake" | "nikah-cake" | "cupcakes" | "biscuits" | "engagement-cake";
     likes: number;                      // ✅ NEEDED for "most liked" filter
     syncedAt: string;                   // ISO timestamp
+    mediaType?: "IMAGE" | "CAROUSEL_ALBUM";
+    media?: DynamoGalleryMedia[];       // Present for carousels; optional for IMAGE
     // comments: number;                // ❌ Optional – only if you want to display
   }
 
