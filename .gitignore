@@ -42,3 +42,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# private local-only notes (do not commit)
+docs/PRIVATE_PRODUCTION_AWS_OIDC.md
