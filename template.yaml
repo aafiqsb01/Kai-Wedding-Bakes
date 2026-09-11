@@ -113,6 +113,13 @@ Resources:
           AWS_SECRETS_INSTAGRAM: opulence-wedding-bakes/instagram-access-token
           INSTAGRAM_BUSINESS_ACCOUNT_ID: !Sub '{{resolve:secretsmanager:opulence-wedding-bakes/instagram-account-id:SecretString}}'
 
+      Events:
+        InstagramSyncSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(6 hours)
+            Enabled: true
+
 Outputs:
 
   ContactFormApiUrl:
