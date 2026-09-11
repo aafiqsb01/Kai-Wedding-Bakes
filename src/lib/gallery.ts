@@ -14,6 +14,12 @@ type DynamoProductType =
   | "brownies"
   | "engagement-cake";
 
+interface DynamoGalleryMedia {
+  mediaId?: string;
+  s3Key?: string;
+  url?: string;
+}
+
 interface DynamoGalleryItem {
   photoId: string;
   backupUrl?: string;
@@ -22,6 +28,8 @@ interface DynamoGalleryItem {
   productType?: DynamoProductType | string;
   likes?: number | null;
   syncedAt?: string;
+  mediaType?: "IMAGE" | "CAROUSEL_ALBUM" | string;
+  media?: DynamoGalleryMedia[];
 }
 
 function mapProductTypeToCategory(
@@ -57,6 +65,10 @@ function getObjectKeyFromBackupUrl(backupUrl: string): string | null {
   }
 }
 
+function toCloudFrontUrl(objectKey: string): string {
+  return `${CLOUDFRONT_BASE.replace(/\/+$/, "")}/${objectKey.replace(/^\/+/, "")}`;
+}
+
 function resolveImageUrl(item: DynamoGalleryItem): string {
   const fromBackup = item.backupUrl?.trim()
     ? getObjectKeyFromBackupUrl(item.backupUrl.trim())
@@ -65,17 +77,60 @@ function resolveImageUrl(item: DynamoGalleryItem): string {
   const objectKey =
     fromBackup ?? `instagram/2026/${item.photoId}.jpg`;
 
-  return `${CLOUDFRONT_BASE.replace(/\/+$/, "")}/${objectKey}`;
+  return toCloudFrontUrl(objectKey);
+}
+
+/**
+ * Resolve CloudFront URLs for a carousel media[] collection.
+ * Falls back to s3Key, then parses url, skipping invalid entries.
+ */
+function resolveMediaUrls(media: DynamoGalleryMedia[]): string[] {
+  const urls: string[] = [];
+
+  for (const entry of media) {
+    const fromKey = entry.s3Key?.trim();
+    if (fromKey) {
+      urls.push(toCloudFrontUrl(fromKey));
+      continue;
+    }
+
+    const fromUrl = entry.url?.trim()
+      ? getObjectKeyFromBackupUrl(entry.url.trim())
+      : null;
+    if (fromUrl) {
+      urls.push(toCloudFrontUrl(fromUrl));
+    }
+  }
+
+  return urls;
 }
 
 function mapGalleryItemToCake(item: DynamoGalleryItem): Cake {
   const productType = item.productType?.trim() || undefined;
+  const coverUrl = resolveImageUrl(item);
+
+  const mediaUrls =
+    Array.isArray(item.media) && item.media.length > 0
+      ? resolveMediaUrls(item.media)
+      : [];
+
+  // Prefer media[] when present; otherwise legacy single-image via backupUrl
+  const imageUrls = mediaUrls.length > 0 ? mediaUrls : undefined;
+  const imageUrl = imageUrls?.[0] ?? coverUrl;
+
+  const mediaType =
+    item.mediaType === "CAROUSEL_ALBUM" || item.mediaType === "IMAGE"
+      ? item.mediaType
+      : imageUrls && imageUrls.length > 1
+        ? "CAROUSEL_ALBUM"
+        : undefined;
 
   return {
     id: item.photoId,
     title: formatProductTypeLabel(productType),
     category: mapProductTypeToCategory(productType),
-    imageUrl: resolveImageUrl(item),
+    imageUrl,
+    imageUrls,
     description: item.caption ?? "",
     instagramUrl: item.instagramUrl,
     tags: [],
@@ -84,6 +139,7 @@ function mapGalleryItemToCake(item: DynamoGalleryItem): Cake {
       ? item.likes
       : 0,
     syncedAt: item.syncedAt,
+    mediaType,
   };
 }
 
