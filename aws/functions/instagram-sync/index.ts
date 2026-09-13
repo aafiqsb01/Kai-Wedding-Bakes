@@ -6,6 +6,7 @@ import {
   saveGalleryItem,
   DynamoGalleryItem,
   DynamoGalleryMedia,
+  ProductType,
 } from "../../config/database";
 
 // ============================================
@@ -167,25 +168,41 @@ async function downloadAndUploadImage(
   };
 }
 
+/** Recognised Instagram hashtags (lowercase, without #) → canonical productType. */
+const HASHTAG_TO_PRODUCT_TYPE: Record<string, ProductType> = {
+  weddingcake: "wedding-cake",
+  "wedding-cake": "wedding-cake",
+  nikahcake: "nikah-cake",
+  nikkahcake: "nikah-cake",
+  nikahtorte: "nikah-cake",
+  cupcakes: "cupcakes",
+  engagement: "engagement-cake",
+  engagementcake: "engagement-cake",
+};
+
 /**
- * Map Instagram media type to product type
- * NOTE: This is a placeholder — you may need custom logic or hashtag parsing
- * to determine actual product type from caption
+ * Extract hashtag tokens from a caption (without the leading #).
+ * Only matches actual #tags, not bare words like "engagements".
  */
-function mapToProductType(
-  caption?: string
-): "wedding-cake" | "nikah-cake" | "cupcakes" | "biscuits" | "engagement-cake" {
-  // Default to wedding-cake, but you can add hashtag parsing logic here
+function extractHashtags(caption: string): string[] {
+  const matches = caption.match(/#[\w-]+/g);
+  if (!matches) return [];
+  return matches.map((tag) => tag.slice(1).toLowerCase());
+}
+
+/**
+ * Map Instagram caption hashtags to a canonical product type.
+ * First recognised product hashtag wins; otherwise defaults to wedding-cake.
+ */
+function mapToProductType(caption?: string): ProductType {
   if (!caption) return "wedding-cake";
 
-  caption = caption.toLowerCase();
+  for (const tag of extractHashtags(caption)) {
+    const productType = HASHTAG_TO_PRODUCT_TYPE[tag];
+    if (productType) return productType;
+  }
 
-  if (caption.includes("#nikahtorte") || caption.includes("#nikahcake")) return "nikah-cake";
-  if (caption.includes("#cupcakes")) return "cupcakes";
-  if (caption.includes("#biscuits")) return "biscuits";
-  if (caption.includes("#engagement")) return "engagement-cake";
-
-  return "wedding-cake"; // Default
+  return "wedding-cake";
 }
 
 /**

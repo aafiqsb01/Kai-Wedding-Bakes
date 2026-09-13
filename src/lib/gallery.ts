@@ -8,10 +8,7 @@ const CLOUDFRONT_BASE = "https://d2zp5rpt2x30su.cloudfront.net";
 type DynamoProductType =
   | "wedding-cake"
   | "nikah-cake"
-  | "nikkah-cake"
   | "cupcakes"
-  | "biscuits"
-  | "brownies"
   | "engagement-cake";
 
 interface DynamoGalleryMedia {
@@ -25,6 +22,7 @@ interface DynamoGalleryItem {
   backupUrl?: string;
   instagramUrl?: string;
   caption?: string;
+  /** Canonical productType; string allows legacy Dynamo values. */
   productType?: DynamoProductType | string;
   likes?: number | null;
   syncedAt?: string;
@@ -37,15 +35,12 @@ function mapProductTypeToCategory(
 ): Cake["category"] {
   switch (productType) {
     case "nikah-cake":
-    case "nikkah-cake":
       return "nikkah cake";
     case "cupcakes":
       return "cupcakes";
     case "engagement-cake":
       return "engagement cake";
     case "wedding-cake":
-    case "biscuits":
-    case "brownies":
     default:
       return "wedding cake";
   }

@@ -15,10 +15,7 @@ export function formatProductTypeLabel(
   const knownLabels: Record<string, string> = {
     "wedding-cake": "Wedding Cake",
     "nikah-cake": "Nikkah Cake",
-    "nikkah-cake": "Nikkah Cake",
     cupcakes: "Cupcakes",
-    brownies: "Brownies",
-    biscuits: "Biscuits",
     "engagement-cake": "Engagement Cake",
   };
 

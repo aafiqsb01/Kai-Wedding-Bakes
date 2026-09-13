@@ -42,6 +42,13 @@ export interface DynamoGalleryMedia {
   url: string; // S3 object URL
 }
 
+/** Canonical gallery product categories written by Instagram sync. */
+export type ProductType =
+  | "wedding-cake"
+  | "nikah-cake"
+  | "cupcakes"
+  | "engagement-cake";
+
 /**
  * Gallery item record in DynamoDB
  * Synced from Instagram via Lambda
@@ -55,7 +62,7 @@ export interface DynamoGalleryItem {
     instagramUrl: string;               // Original Instagram URL
     backupUrl: string;                  // S3 backup URL (cover / first image)
     caption: string;
-    productType: "wedding-cake" | "nikah-cake" | "cupcakes" | "biscuits" | "engagement-cake";
+    productType: ProductType;
     likes: number;                      // ✅ NEEDED for "most liked" filter
     syncedAt: string;                   // ISO timestamp
     mediaType?: "IMAGE" | "CAROUSEL_ALBUM";
