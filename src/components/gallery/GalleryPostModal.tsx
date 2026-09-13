@@ -128,7 +128,7 @@ export function GalleryPostModal({ item, open, onClose }: GalleryPostModalProps)
 
         {isCarousel ? (
           <p
-            className="text-center text-sm tracking-wide text-cream"
+            className="text-center text-sm tracking-wide text-black"
             aria-live="polite"
           >
             {safeIndex + 1} / {slides.length}
@@ -140,7 +140,7 @@ export function GalleryPostModal({ item, open, onClose }: GalleryPostModalProps)
             href={item.instagramUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-center text-xs uppercase tracking-[0.18em] text-cream/80 transition-colors hover:text-cream"
+            className="text-center text-xs uppercase tracking-[0.18em] text-black transition-colors hover:text-black/80"
             onClick={(event) => event.stopPropagation()}
           >
             View on Instagram
