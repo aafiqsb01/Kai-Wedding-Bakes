@@ -18,6 +18,8 @@ export interface Cake {
   productType?: string;
   likes?: number;
   syncedAt?: string;
+  /** Original Instagram media timestamp (ISO). Prefer over syncedAt for ordering. */
+  instagramTimestamp?: string;
   mediaType?: "IMAGE" | "CAROUSEL_ALBUM";
 }
 

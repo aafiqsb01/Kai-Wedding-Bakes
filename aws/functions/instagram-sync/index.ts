@@ -174,7 +174,8 @@ const HASHTAG_TO_PRODUCT_TYPE: Record<string, ProductType> = {
   "wedding-cake": "wedding-cake",
   nikahcake: "nikah-cake",
   nikkahcake: "nikah-cake",
-  nikahtorte: "nikah-cake",
+  "nikkah-cake": "nikah-cake",
+  "nikah-cake": "nikah-cake",
   cupcakes: "cupcakes",
   engagement: "engagement-cake",
   engagementcake: "engagement-cake",
@@ -270,6 +271,7 @@ async function processCarouselAlbum(
     productType,
     likes: media.like_count || 0,
     syncedAt: new Date().toISOString(),
+    instagramTimestamp: media.timestamp,
     mediaType: "CAROUSEL_ALBUM",
     media: mediaAssets,
   };
@@ -314,6 +316,7 @@ async function processInstagramMedia(media: InstagramMedia, instagramToken: stri
     productType,
     likes: media.like_count || 0,
     syncedAt: new Date().toISOString(),
+    instagramTimestamp: media.timestamp,
     mediaType: "IMAGE",
   };
 

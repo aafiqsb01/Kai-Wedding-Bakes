@@ -11,12 +11,13 @@ function likesOf(cake: Cake): number {
   return cake.likes ?? 0;
 }
 
-function syncedAtOf(cake: Cake): string {
-  return cake.syncedAt ?? "";
+/** Prefer Instagram post time; fall back to sync time for legacy records. */
+function sortTimestampOf(cake: Cake): string {
+  return cake.instagramTimestamp ?? cake.syncedAt ?? "";
 }
 
 function isNewer(a: Cake, b: Cake): boolean {
-  return syncedAtOf(a) > syncedAtOf(b);
+  return sortTimestampOf(a) > sortTimestampOf(b);
 }
 
 /** Group cakes by productType (missing → "other"). */
@@ -44,7 +45,8 @@ export type GallerySection = {
 
 /**
  * Build gallery page sections: one carousel per product type,
- * each sorted by syncedAt desc and capped at the latest N posts.
+ * each sorted by instagramTimestamp (fallback: syncedAt) desc
+ * and capped at the latest N posts.
  */
 export function getGallerySections(
   cakes: Cake[],
@@ -58,7 +60,7 @@ export function getGallerySections(
     if (items.length === 0) continue;
 
     const sorted = [...items].sort((a, b) => {
-      const byDate = syncedAtOf(b).localeCompare(syncedAtOf(a));
+      const byDate = sortTimestampOf(b).localeCompare(sortTimestampOf(a));
       if (byDate !== 0) return byDate;
       return likesOf(b) - likesOf(a);
     });
@@ -74,8 +76,8 @@ export function getGallerySections(
 
   // Most recently active product types first
   sections.sort((a, b) => {
-    const aLatest = syncedAtOf(a.items[0]!);
-    const bLatest = syncedAtOf(b.items[0]!);
+    const aLatest = sortTimestampOf(a.items[0]!);
+    const bLatest = sortTimestampOf(b.items[0]!);
     return bLatest.localeCompare(aLatest);
   });
 
@@ -118,7 +120,7 @@ export function getFeaturedCommissions(
     .sort((a, b) => {
       const byLikes = likesOf(b) - likesOf(a);
       if (byLikes !== 0) return byLikes;
-      return syncedAtOf(b).localeCompare(syncedAtOf(a));
+      return sortTimestampOf(b).localeCompare(sortTimestampOf(a));
     })
     .slice(0, limit);
 }
