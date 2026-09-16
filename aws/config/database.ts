@@ -64,7 +64,9 @@ export interface DynamoGalleryItem {
     caption: string;
     productType: ProductType;
     likes: number;                      // ✅ NEEDED for "most liked" filter
-    syncedAt: string;                   // ISO timestamp
+    syncedAt: string;                   // ISO timestamp of last Lambda sync
+    /** Original Instagram media timestamp (ISO). Used for gallery ordering. */
+    instagramTimestamp?: string;
     mediaType?: "IMAGE" | "CAROUSEL_ALBUM";
     media?: DynamoGalleryMedia[];       // Present for carousels; optional for IMAGE
     // comments: number;                // ❌ Optional – only if you want to display

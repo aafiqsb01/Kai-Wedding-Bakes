@@ -26,6 +26,7 @@ interface DynamoGalleryItem {
   productType?: DynamoProductType | string;
   likes?: number | null;
   syncedAt?: string;
+  instagramTimestamp?: string;
   mediaType?: "IMAGE" | "CAROUSEL_ALBUM" | string;
   media?: DynamoGalleryMedia[];
 }
@@ -134,6 +135,7 @@ function mapGalleryItemToCake(item: DynamoGalleryItem): Cake {
       ? item.likes
       : 0,
     syncedAt: item.syncedAt,
+    instagramTimestamp: item.instagramTimestamp,
     mediaType,
   };
 }
