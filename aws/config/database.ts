@@ -47,7 +47,9 @@ export type ProductType =
   | "wedding-cake"
   | "nikah-cake"
   | "cupcakes"
-  | "engagement-cake";
+  | "engagement-cake"
+  | "birthday-cake"
+  | "anniversary-cake";
 
 /**
  * Gallery item record in DynamoDB

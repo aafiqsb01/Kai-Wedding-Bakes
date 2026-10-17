@@ -179,6 +179,10 @@ const HASHTAG_TO_PRODUCT_TYPE: Record<string, ProductType> = {
   cupcakes: "cupcakes",
   engagement: "engagement-cake",
   engagementcake: "engagement-cake",
+  birthdaycake: "birthday-cake",
+  "birthday-cake": "birthday-cake",
+  anniversarycake: "anniversary-cake",
+  "anniversary-cake": "anniversary-cake",
 };
 
 /**

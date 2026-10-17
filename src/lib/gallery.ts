@@ -9,7 +9,9 @@ type DynamoProductType =
   | "wedding-cake"
   | "nikah-cake"
   | "cupcakes"
-  | "engagement-cake";
+  | "engagement-cake"
+  | "birthday-cake"
+  | "anniversary-cake";
 
 interface DynamoGalleryMedia {
   mediaId?: string;
@@ -41,6 +43,10 @@ function mapProductTypeToCategory(
       return "cupcakes";
     case "engagement-cake":
       return "engagement cake";
+    case "birthday-cake":
+      return "birthday cake";
+    case "anniversary-cake":
+      return "anniversary cake";
     case "wedding-cake":
     default:
       return "wedding cake";
