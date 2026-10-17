@@ -2,10 +2,14 @@
   "name": "opulence-wedding-bakes-aws",
   "version": "1.0.0",
   "private": true,
+  "scripts": {
+    "test": "esbuild functions/instagram-sync/sync.test.ts --bundle --platform=node --format=cjs --outfile=dist-test/sync.test.cjs --external:node:test --external:node:assert/strict && node --test dist-test/sync.test.cjs"
+  },
   "devDependencies": {
     "esbuild": "^0.25.0"
   },
   "dependencies": {
+    "@aws-sdk/client-cloudwatch": "^3.1123.0",
     "@aws-sdk/client-dynamodb": "^3.1123.0",
     "@aws-sdk/client-s3": "^3.1125.0",
     "@aws-sdk/client-secrets-manager": "^3.1123.0",

@@ -1,4 +1,4 @@
-import { SecretsManagerClient, GetSecretValueCommand } from "@aws-sdk/client-secrets-manager";
+import { SecretsManagerClient, GetSecretValueCommand, PutSecretValueCommand } from "@aws-sdk/client-secrets-manager";
 
 // Initialize Secrets Manager client
 const secretsClient = new SecretsManagerClient({ region: process.env.AWS_REGION || "eu-west-2" });
@@ -72,6 +72,32 @@ export async function getResendApiKey(): Promise<string> {
       throw new Error("Resend API key not found in Secrets Manager or environment");
     }
     return key;
+  }
+}
+
+/**
+ * Replace a secret only after the caller has validated the new value.
+ * The cache is updated only when Secrets Manager accepts the write.
+ */
+export async function putSecret(secretName: string, secretValue: string): Promise<void> {
+  if (!secretValue.trim()) {
+    throw new Error(`Refusing to store an empty secret: ${secretName}`);
+  }
+
+  try {
+    await secretsClient.send(
+      new PutSecretValueCommand({
+        SecretId: secretName,
+        SecretString: secretValue,
+      })
+    );
+    secretsCache.set(secretName, secretValue);
+  } catch (error) {
+    const name = error instanceof Error ? error.name : "UnknownError";
+    console.error(`Failed to update secret ${secretName}: ${name}`);
+    throw new Error(
+      `Could not update secret: ${secretName}. The previous value was left unchanged.`
+    );
   }
 }
 

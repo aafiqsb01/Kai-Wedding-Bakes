@@ -22,6 +22,7 @@
 
 # AWS SAM build artifacts
 .aws-sam/
+aws/dist-test/
 
 # misc
 .DS_Store

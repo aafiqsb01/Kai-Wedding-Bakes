@@ -113,6 +113,41 @@ export async function saveGalleryItem(item: DynamoGalleryItem): Promise<void> {
   await documentClient.send(command);
 }
 
+/**
+ * Newest Instagram timestamp already stored, or null when the gallery has none.
+ * Used as the inclusive backfill boundary. Does not delete or rewrite rows.
+ */
+export async function getGallerySyncBoundary(): Promise<string | null> {
+  let newestMs: number | null = null;
+  let newestRaw: string | null = null;
+  let startKey: Record<string, unknown> | undefined;
+
+  do {
+    const result = await documentClient.send(
+      new ScanCommand({
+        TableName: TABLES.GALLERY,
+        ProjectionExpression: "instagramTimestamp",
+        ExclusiveStartKey: startKey,
+      })
+    );
+
+    for (const item of result.Items ?? []) {
+      const raw = item.instagramTimestamp;
+      if (typeof raw !== "string" || !raw.trim()) continue;
+      const ms = Date.parse(raw);
+      if (Number.isNaN(ms)) continue;
+      if (newestMs === null || ms > newestMs) {
+        newestMs = ms;
+        newestRaw = raw;
+      }
+    }
+
+    startKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
+  } while (startKey);
+
+  return newestRaw;
+}
+
 // Fetch all gallery items
 export async function getAllGalleryItems(): Promise<DynamoGalleryItem[]> {
   const command = new ScanCommand({
