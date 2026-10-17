@@ -11,6 +11,9 @@ export const documentClient = DynamoDBDocumentClient.from(dynamoDbClient);
 export const TABLES = {
   ENQUIRIES: process.env.AWS_DYNAMODB_TABLE_ENQUIRIES || "opulence-wedding-bakes-enquiries",
   GALLERY: process.env.AWS_DYNAMODB_TABLE_GALLERY || "opulence-wedding-bakes-gallery",
+  INSTAGRAM_SYNC_RECOVERY:
+    process.env.AWS_DYNAMODB_TABLE_INSTAGRAM_SYNC_RECOVERY ||
+    "opulence-wedding-bakes-instagram-sync-recovery",
 } as const;
 
 // ============================================
@@ -115,7 +118,8 @@ export async function saveGalleryItem(item: DynamoGalleryItem): Promise<void> {
 
 /**
  * Newest Instagram timestamp already stored, or null when the gallery has none.
- * Used as the inclusive backfill boundary. Does not delete or rewrite rows.
+ * Sync does not use this as its import boundary. The recovery row owns the
+ * backfill floor and any resume cursor. Does not delete or rewrite rows.
  */
 export async function getGallerySyncBoundary(): Promise<string | null> {
   let newestMs: number | null = null;

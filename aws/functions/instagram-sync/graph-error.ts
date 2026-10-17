@@ -75,6 +75,16 @@ export function logGraphError(error: InstagramGraphError): void {
   );
 }
 
+/**
+ * A rejected paging cursor. Auth failures are not cursor failures.
+ * Code alone is not enough: Graph code 100 covers many invalid parameters.
+ */
+export function isInvalidCursorError(error: unknown): boolean {
+  if (!(error instanceof InstagramGraphError)) return false;
+  if (error.reauthorisationRequired) return false;
+  return /cursor/i.test(error.message);
+}
+
 export function publicErrorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : "Unknown error";
   return sanitizeGraphMessage(raw);

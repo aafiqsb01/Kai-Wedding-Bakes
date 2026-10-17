@@ -68,6 +68,29 @@ Resources:
           - content-type
         MaxAge: 600
 
+  # Operational retry state. Kept off the gallery table so a cursor or failed
+  # media id cannot appear as a gallery post. Retain and point-in-time recovery
+  # so a stack update cannot drop posts that still need another run.
+  InstagramSyncRecoveryTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: opulence-wedding-bakes-instagram-sync-recovery
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
   InstagramSyncFunction:
     Type: AWS::Serverless::Function
     Metadata:
@@ -109,11 +132,15 @@ Resources:
       Environment:
         Variables:
           AWS_DYNAMODB_TABLE_GALLERY: opulence-wedding-bakes-gallery
+          AWS_DYNAMODB_TABLE_INSTAGRAM_SYNC_RECOVERY: !Ref InstagramSyncRecoveryTable
           AWS_S3_BUCKET_NAME: opulence-wedding-bakes-photos
           AWS_SECRETS_INSTAGRAM: opulence-wedding-bakes/instagram-access-token
           INSTAGRAM_BUSINESS_ACCOUNT_ID: !Sub '{{resolve:secretsmanager:opulence-wedding-bakes/instagram-account-id:SecretString}}'
-          # Stop backfill before this many 25-post pages. A hit fails the run.
+          # Stop a walk before this many 25-post pages. Progress is saved and the next run resumes.
           INSTAGRAM_SYNC_MAX_PAGES: "10"
+          # One-time backfill floor. The media edge has no time filter; sync pages newest-first
+          # until posts are strictly older than this instant. Not a Graph query parameter.
+          INSTAGRAM_SYNC_BACKFILL_UNTIL: "2026-09-28T00:00:00.000Z"
 
       Events:
         InstagramSyncSchedule:
@@ -126,7 +153,8 @@ Resources:
               MaximumRetryAttempts: 0
 
   # The function Role above is an existing role, so SAM Policies on the
-  # function are not applied. This policy is what the next deploy attaches.
+  # function are not applied. This policy is what the next deploy attaches,
+  # including least-privilege access to the recovery table.
   InstagramSyncMetricAndTokenPolicy:
     Type: AWS::IAM::Policy
     Properties:
@@ -147,6 +175,12 @@ Resources:
             Action:
               - secretsmanager:PutSecretValue
             Resource: !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:opulence-wedding-bakes/instagram-access-token-*"
+          - Effect: Allow
+            Action:
+              - dynamodb:PutItem
+              - dynamodb:DeleteItem
+              - dynamodb:Query
+            Resource: !GetAtt InstagramSyncRecoveryTable.Arn
 
   InstagramSyncAlarmTopic:
     Type: AWS::SNS::Topic

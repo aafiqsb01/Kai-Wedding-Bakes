@@ -1,16 +1,25 @@
 import type { DynamoGalleryItem, DynamoGalleryMedia, ProductType } from "../../config/database";
 import {
   InstagramGraphError,
+  isInvalidCursorError,
   logGraphError,
   parseGraphError,
   publicErrorMessage,
 } from "./graph-error";
 import {
   DEFAULT_MAX_PAGES,
+  continuationLooksRestarted,
+  newestTimestamp,
+  oldestTimestamp,
   pageIsStrictlyOlderThanBoundary,
   shouldImportPost,
   timestampMillis,
 } from "./pagination";
+import {
+  emptyBackfill,
+  type InstagramRecoveryState,
+  type RecoveryPosition,
+} from "./recovery-state";
 import {
   isRefreshEligible,
   parseRefreshResponse,
@@ -62,7 +71,13 @@ export type SyncDependencies = {
   loadSecret: () => Promise<string>;
   saveSecret: (value: string) => Promise<void>;
   getAccountId: () => string;
-  getBoundary: () => Promise<string | null>;
+  /** Posts strictly older than this are outside the one-time historical backfill. */
+  backfillUntil: string;
+  loadRecoveryState: () => Promise<InstagramRecoveryState>;
+  initialiseRecovery: (position: RecoveryPosition) => Promise<void>;
+  saveRecovery: (position: RecoveryPosition) => Promise<void>;
+  recordFailure: (mediaId: string, instagramTimestamp: string | undefined) => Promise<void>;
+  clearFailure: (mediaId: string) => Promise<void>;
   saveGalleryItem: (item: DynamoGalleryItem) => Promise<void>;
   uploadPhoto: (photoId: string, body: Buffer, contentType: string) => Promise<string>;
   putSuccessMetric: () => Promise<void>;
@@ -108,71 +123,305 @@ export async function runInstagramSync(deps: SyncDependencies): Promise<SyncSumm
     ? await refreshToken(stored, deps)
     : stored;
 
-  const boundaryRaw = await deps.getBoundary();
-  const boundaryMs = timestampMillis(boundaryRaw);
-  const accountId = deps.getAccountId();
-  const maxPages = deps.maxPages > 0 ? deps.maxPages : DEFAULT_MAX_PAGES;
-
-  const failures: string[] = [];
-  let saved = 0;
-  let skipped = 0;
-  let after: string | undefined;
-
-  for (let page = 1; page <= maxPages; page += 1) {
-    const mediaPage = await fetchMediaPage(deps, accountId, token.accessToken, after);
-    const posts = mediaPage.data ?? [];
-
-    for (const media of posts) {
-      if (!shouldImportPost(media.timestamp, boundaryMs)) continue;
-      try {
-        const outcome = await processInstagramMedia(media, token.accessToken, deps);
-        if (outcome === "skipped") skipped += 1;
-        else saved += 1;
-      } catch (error) {
-        failures.push(media.id);
-        console.error(
-          `Failed to process media ${media.id}: ${publicErrorMessage(error)}`
-        );
-      }
-    }
-
-    const reachedOlderHistory =
-      boundaryMs !== null &&
-      pageIsStrictlyOlderThanBoundary(
-        posts.map((post) => post.timestamp),
-        boundaryMs
-      );
-    const hasNext = Boolean(mediaPage.paging?.next);
-    if (reachedOlderHistory || !hasNext) {
-      after = undefined;
-      break;
-    }
-
-    const cursor = mediaPage.paging?.cursors?.after;
-    if (!cursor) {
-      throw new Error(
-        "Instagram returned another page without a cursor. Sync stopped before completion. Posts already written were kept."
-      );
-    }
-    if (page === maxPages) {
-      const reason = boundaryMs === null
-        ? `Instagram sync stopped after the page limit of ${maxPages} and more posts remain.`
-        : `Instagram sync stopped after the page limit of ${maxPages} before reaching posts older than the gallery boundary.`;
-      throw new Error(
-        `${reason} Raise INSTAGRAM_SYNC_MAX_PAGES and retry. Posts already written were kept.`
-      );
-    }
-    after = cursor;
+  const loaded = await deps.loadRecoveryState();
+  let position: RecoveryPosition = loaded.initialised
+    ? copyPosition(loaded)
+    : emptyBackfill(deps.backfillUntil);
+  if (!loaded.initialised) {
+    await deps.initialiseRecovery(position);
   }
 
-  if (failures.length > 0) {
-    throw new Error(
-      `Instagram sync incomplete. ${failures.length} post(s) failed (${failures.join(", ")}). Posts already written were kept.`
-    );
+  const outstanding = new Set(loaded.failures.map((failure) => failure.mediaId));
+  const attempted = new Set<string>();
+  const summary: SyncSummary = { saved: 0, skipped: 0 };
+  const accessToken = token.accessToken;
+
+  for (const mediaId of loaded.failures.map((failure) => failure.mediaId)) {
+    if (attempted.has(mediaId)) continue;
+    attempted.add(mediaId);
+    try {
+      const media = await fetchMediaById(deps, mediaId, accessToken);
+      const outcome = await processInstagramMedia(media, accessToken, deps);
+      if (outcome === "skipped") summary.skipped += 1;
+      else summary.saved += 1;
+    } catch (error) {
+      console.error(`Failed to retry media ${mediaId}: ${publicErrorMessage(error)}`);
+      continue;
+    }
+    await deps.clearFailure(mediaId);
+    outstanding.delete(mediaId);
+  }
+
+  const accountId = deps.getAccountId();
+  const maxPages = deps.maxPages > 0 ? deps.maxPages : DEFAULT_MAX_PAGES;
+  let result = await walkFeed({
+    deps,
+    accessToken,
+    accountId,
+    maxPages,
+    position,
+    outstanding,
+    attempted,
+    summary,
+  });
+
+  if (
+    result.stop === "complete" &&
+    !result.sawHead &&
+    !position.headSweepFloor &&
+    result.position.historyCovered
+  ) {
+    const sweepFloor = result.position.pendingHead ?? result.position.backfillUntil;
+    const sweepPosition: RecoveryPosition = {
+      ...result.position,
+      phase: "backfill",
+      historyCovered: true,
+      headSweepFloor: sweepFloor,
+      resumeCursor: null,
+      seekAnchor: false,
+      anchorId: null,
+      anchorTimestamp: null,
+    };
+    await deps.saveRecovery(sweepPosition);
+    result = await walkFeed({
+      deps,
+      accessToken,
+      accountId,
+      maxPages,
+      position: sweepPosition,
+      outstanding,
+      attempted,
+      summary,
+    });
+  }
+
+  if (result.stop !== "complete") {
+    throw incompleteError(result.stop, outstanding, maxPages, result.position);
+  }
+
+  const live = toLivePosition(result.position);
+  await deps.saveRecovery(live);
+  if (outstanding.size > 0) {
+    throw incompleteError("failures", outstanding, maxPages, live);
   }
 
   await deps.putSuccessMetric();
-  return { saved, skipped };
+  return summary;
+}
+
+type WalkStop = "complete" | "page-cap" | "missing-cursor" | "failures";
+
+function incompleteError(
+  stop: WalkStop,
+  outstanding: Set<string>,
+  maxPages: number,
+  position: RecoveryPosition
+): Error {
+  if (outstanding.size > 0) {
+    const failedIds = [...outstanding].sort();
+    return new Error(
+      `Instagram sync incomplete. ${failedIds.length} post(s) failed (${failedIds.join(", ")}). Posts already written were kept.`
+    );
+  }
+  if (stop === "missing-cursor") {
+    return new Error(
+      "Instagram returned another page without a cursor. Sync stopped before completion. Posts already written were kept."
+    );
+  }
+  const boundary = position.phase === "live" ? position.liveWatermark : position.backfillUntil;
+  const reason = timestampMillis(boundary) === null
+    ? `Instagram sync stopped after the page limit of ${maxPages} and more posts remain.`
+    : `Instagram sync stopped after the page limit of ${maxPages} before reaching posts older than the gallery boundary.`;
+  return new Error(
+    `${reason} Raise INSTAGRAM_SYNC_MAX_PAGES and retry. Posts already written were kept.`
+  );
+}
+
+function copyPosition(state: InstagramRecoveryState): RecoveryPosition {
+  return {
+    phase: state.phase,
+    backfillUntil: state.backfillUntil,
+    liveWatermark: state.liveWatermark,
+    pendingHead: state.pendingHead,
+    resumeCursor: state.resumeCursor,
+    anchorId: state.anchorId,
+    anchorTimestamp: state.anchorTimestamp,
+    seekAnchor: state.seekAnchor,
+    historyCovered: state.historyCovered,
+    headSweepFloor: state.headSweepFloor,
+  };
+}
+
+function toLivePosition(position: RecoveryPosition): RecoveryPosition {
+  const head = position.pendingHead ?? position.liveWatermark ?? position.backfillUntil;
+  return {
+    ...position,
+    phase: "live",
+    historyCovered: true,
+    liveWatermark: head,
+    pendingHead: head,
+    resumeCursor: null,
+    anchorId: null,
+    anchorTimestamp: null,
+    seekAnchor: false,
+    headSweepFloor: null,
+  };
+}
+
+function importFloor(position: RecoveryPosition): string | null {
+  if (position.headSweepFloor) return position.headSweepFloor;
+  if (position.phase === "live" && position.liveWatermark) return position.liveWatermark;
+  return position.backfillUntil;
+}
+
+function feedWalkFinished(posts: InstagramMedia[], hasNext: boolean, position: RecoveryPosition): boolean {
+  if (!hasNext) return true;
+  if (position.headSweepFloor) {
+    const oldest = oldestTimestamp(posts.map((post) => post.timestamp));
+    const oldestMs = timestampMillis(oldest);
+    const floorMs = timestampMillis(position.headSweepFloor);
+    return oldestMs !== null && floorMs !== null && oldestMs <= floorMs;
+  }
+  const boundary = position.phase === "live" ? position.liveWatermark : position.backfillUntil;
+  return pageIsStrictlyOlderThanBoundary(
+    posts.map((post) => post.timestamp),
+    timestampMillis(boundary)
+  );
+}
+
+async function walkFeed(input: {
+  deps: SyncDependencies;
+  accessToken: string;
+  accountId: string;
+  maxPages: number;
+  position: RecoveryPosition;
+  outstanding: Set<string>;
+  attempted: Set<string>;
+  summary: SyncSummary;
+}): Promise<{ stop: WalkStop; sawHead: boolean; position: RecoveryPosition }> {
+  const { deps, accessToken, accountId, maxPages, outstanding, attempted, summary } = input;
+  const position: RecoveryPosition = { ...input.position };
+  let after = position.resumeCursor ?? undefined;
+  let seekAnchor = position.seekAnchor;
+  let sawAnchor = !seekAnchor;
+  const savedAnchor = { id: position.anchorId, timestamp: position.anchorTimestamp };
+  let sawHead = !after;
+  let rewalked = false;
+  let pages = 0;
+
+  while (pages < maxPages) {
+    let mediaPage: InstagramPage;
+    const requestedAfter = after;
+    try {
+      mediaPage = await fetchMediaPage(deps, accountId, accessToken, requestedAfter);
+    } catch (error) {
+      if (requestedAfter && isInvalidCursorError(error) && !rewalked) {
+        console.error(
+          "Instagram continuation cursor was rejected. Restarting this walk from the newest page without marking history complete."
+        );
+        rewalked = true;
+        after = undefined;
+        seekAnchor = true;
+        sawAnchor = false;
+        sawHead = true;
+        position.resumeCursor = null;
+        position.seekAnchor = true;
+        continue;
+      }
+      throw error;
+    }
+
+    const posts = mediaPage.data ?? [];
+    if (requestedAfter && posts.length === 0 && !rewalked) {
+      console.error(
+        "Instagram continuation cursor returned no posts. Restarting from the newest page without marking history complete."
+      );
+      rewalked = true;
+      after = undefined;
+      seekAnchor = true;
+      sawAnchor = false;
+      sawHead = true;
+      position.resumeCursor = null;
+      position.seekAnchor = true;
+      continue;
+    }
+    if (
+      requestedAfter &&
+      !rewalked &&
+      continuationLooksRestarted(posts, savedAnchor)
+    ) {
+      console.error(
+        "Instagram continuation cursor did not resume older history. Restarting from the newest page without marking history complete."
+      );
+      // Discard this body. A missing next link here is not the end of the feed.
+      // The following request has no cursor, so only that fresh head can finish the walk.
+      rewalked = true;
+      after = undefined;
+      seekAnchor = true;
+      sawAnchor = false;
+      sawHead = true;
+      position.resumeCursor = null;
+      position.seekAnchor = true;
+      continue;
+    }
+
+    pages += 1;
+    const fromHead = !requestedAfter || (rewalked && pages === 1);
+    if (fromHead) sawHead = true;
+
+    const floor = importFloor(position);
+    const floorMs = timestampMillis(floor);
+    for (const media of posts) {
+      if (seekAnchor && media.id === savedAnchor.id) sawAnchor = true;
+      if (!shouldImportPost(media.timestamp, floorMs)) continue;
+      if (attempted.has(media.id)) continue;
+      attempted.add(media.id);
+      try {
+        const outcome = await processInstagramMedia(media, accessToken, deps);
+        if (outcome === "skipped") summary.skipped += 1;
+        else summary.saved += 1;
+      } catch (error) {
+        console.error(`Failed to process media ${media.id}: ${publicErrorMessage(error)}`);
+        await deps.recordFailure(media.id, media.timestamp);
+        outstanding.add(media.id);
+      }
+    }
+
+    if (fromHead) {
+      const newest = newestTimestamp(posts.map((post) => post.timestamp));
+      const newestMs = timestampMillis(newest);
+      const pendingMs = timestampMillis(position.pendingHead);
+      if (newest && newestMs !== null && (pendingMs === null || newestMs > pendingMs)) {
+        position.pendingHead = newest;
+      }
+    }
+
+    const hasNext = Boolean(mediaPage.paging?.next);
+    if (feedWalkFinished(posts, hasNext, position)) {
+      if (!position.headSweepFloor && position.phase !== "live") position.historyCovered = true;
+      position.resumeCursor = null;
+      position.anchorId = null;
+      position.anchorTimestamp = null;
+      position.seekAnchor = false;
+      if (position.headSweepFloor) position.headSweepFloor = null;
+      return { stop: "complete", sawHead, position };
+    }
+
+    const cursor = mediaPage.paging?.cursors?.after;
+    if (!cursor) return { stop: "missing-cursor", sawHead, position };
+
+    const last = posts[posts.length - 1];
+    position.resumeCursor = cursor;
+    position.anchorId = last?.id ?? null;
+    position.anchorTimestamp = oldestTimestamp(posts.map((post) => post.timestamp));
+    position.seekAnchor = seekAnchor && !sawAnchor;
+    await deps.saveRecovery(position);
+
+    if (pages >= maxPages) return { stop: "page-cap", sawHead, position };
+    after = cursor;
+  }
+
+  return { stop: "page-cap", sawHead, position };
 }
 
 async function refreshToken(
@@ -229,6 +478,36 @@ async function assertReplacementTokenWorks(accessToken: string, deps: SyncDepend
   const id = parsed && typeof parsed === "object" ? (parsed as { id?: unknown }).id : undefined;
   if (typeof id !== "string" || !id.trim()) {
     throw new Error("Replacement Instagram token could not be validated");
+  }
+}
+
+async function fetchMediaById(
+  deps: SyncDependencies,
+  mediaId: string,
+  accessToken: string
+): Promise<InstagramMedia> {
+  const url = new URL(
+    `https://graph.instagram.com/${GRAPH_VERSION}/${encodeURIComponent(mediaId)}`
+  );
+  url.searchParams.set("fields", MEDIA_FIELDS);
+  url.searchParams.set("access_token", accessToken);
+
+  const { status, body } = await readGraph(deps, url);
+  if (status < 200 || status >= 300) {
+    const error = parseGraphError(status, body);
+    logGraphError(error);
+    throw error;
+  }
+
+  try {
+    const media = JSON.parse(body) as InstagramMedia;
+    if (!media || typeof media.id !== "string" || !media.id.trim()) {
+      throw new Error(`Instagram media ${mediaId} could not be read`);
+    }
+    return media;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("could not be read")) throw error;
+    throw new Error(`Instagram media ${mediaId} response was not valid JSON`);
   }
 }
 
