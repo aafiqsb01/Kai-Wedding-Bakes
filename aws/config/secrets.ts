@@ -40,24 +40,6 @@ export async function getSecret(secretName: string): Promise<string> {
 }
 
 /**
- * Fetch Instagram API token from Secrets Manager
- * Falls back to environment variable if not found
- */
-export async function getInstagramToken(): Promise<string> {
-  try {
-    const secretName = process.env.AWS_SECRETS_INSTAGRAM || "opulence/instagram-api";
-    return await getSecret(secretName);
-  } catch {
-    // Fallback to env var
-    const token = process.env.INSTAGRAM_ACCESS_TOKEN;
-    if (!token) {
-      throw new Error("Instagram token not found in Secrets Manager or environment");
-    }
-    return token;
-  }
-}
-
-/**
  * Fetch Resend API key from Secrets Manager
  * Falls back to environment variable if not found
  */

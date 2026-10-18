@@ -17,6 +17,8 @@ export function formatProductTypeLabel(
     "nikah-cake": "Nikkah Cake",
     cupcakes: "Cupcakes",
     "engagement-cake": "Engagement Cake",
+    "birthday-cake": "Birthday Cake",
+    "anniversary-cake": "Anniversary Cake",
   };
 
   if (knownLabels[normalized]) {

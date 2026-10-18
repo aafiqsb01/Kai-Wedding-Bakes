@@ -2,6 +2,7 @@
 
 # dependencies
 /node_modules
+aws/node_modules
 /.pnp
 .pnp.*
 .yarn/*
@@ -12,6 +13,7 @@
 
 # testing
 /coverage
+/dist-test/
 
 # next.js
 /.next/

@@ -1,5 +1,5 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 
 // Initialize DynamoDB client
 const dynamoDbClient = new DynamoDBClient({ region: process.env.AWS_REGION || "eu-west-2" });
@@ -50,7 +50,9 @@ export type ProductType =
   | "wedding-cake"
   | "nikah-cake"
   | "cupcakes"
-  | "engagement-cake";
+  | "engagement-cake"
+  | "birthday-cake"
+  | "anniversary-cake";
 
 /**
  * Gallery item record in DynamoDB
@@ -88,25 +90,6 @@ export async function saveEnquiry(enquiry: DynamoEnquiry): Promise<void> {
   await documentClient.send(command);
 }
 
-// Fetch a single enquiry by ID
-export async function getEnquiry(enquiryId: string): Promise<DynamoEnquiry | undefined> {
-  const command = new GetCommand({
-    TableName: TABLES.ENQUIRIES,
-    Key: { enquiryId },
-  });
-  const result = await documentClient.send(command);
-  return result.Item as DynamoEnquiry | undefined;
-}
-
-// Scan all enquiries (use cautiously in production)
-export async function getAllEnquiries(): Promise<DynamoEnquiry[]> {
-  const command = new ScanCommand({
-    TableName: TABLES.ENQUIRIES,
-  });
-  const result = await documentClient.send(command);
-  return (result.Items || []) as DynamoEnquiry[];
-}
-
 // Save a gallery item to DynamoDB
 export async function saveGalleryItem(item: DynamoGalleryItem): Promise<void> {
   const command = new PutCommand({
@@ -114,15 +97,6 @@ export async function saveGalleryItem(item: DynamoGalleryItem): Promise<void> {
     Item: item,
   });
   await documentClient.send(command);
-}
-
-// Fetch all gallery items
-export async function getAllGalleryItems(): Promise<DynamoGalleryItem[]> {
-  const command = new ScanCommand({
-    TableName: TABLES.GALLERY,
-  });
-  const result = await documentClient.send(command);
-  return (result.Items || []) as DynamoGalleryItem[];
 }
 
 // Fetch a single gallery item by photoId

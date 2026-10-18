@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { DynamoGalleryItem } from "../../config/database";
-import { parseGraphError } from "./graph-error";
-import { isRefreshEligible, parseStoredToken } from "./token-lifecycle";
+import type { DynamoGalleryItem } from "../../../aws/config/database";
+import { parseGraphError } from "../../../aws/functions/instagram-sync/graph-error";
+import { isRefreshEligible, parseStoredToken } from "../../../aws/functions/instagram-sync/token-lifecycle";
 import {
   DEFAULT_BACKFILL_UNTIL,
   emptyBackfill,
@@ -10,13 +10,13 @@ import {
   failureRecord,
   recoveryRecord,
   watermarkRecord,
-} from "./recovery-state";
+} from "../../../aws/functions/instagram-sync/recovery-state";
 import {
   mapToProductType,
   runInstagramSync,
   type GraphResponse,
   type SyncDependencies,
-} from "./sync";
+} from "../../../aws/functions/instagram-sync/sync";
 
 const ACCOUNT_ID = "17841400000000000";
 const BOUNDARY = "2026-09-28T16:53:07+0000";
@@ -70,6 +70,7 @@ function harness(options: {
   failAdvanceWatermark?: boolean;
   failContinuationWrite?: boolean;
   backfillUntil?: string;
+  me?: GraphResponse;
 }) {
   const calls: Call[] = [];
   const refreshCalls: string[] = [];
@@ -108,6 +109,9 @@ function harness(options: {
         mediaUsedRefreshedToken = true;
       }
       if (parsed.hostname !== "graph.instagram.com") return imageResponse();
+      if (parsed.pathname === "/v18.0/me") {
+        return options.me ?? jsonResponse(200, { id: ACCOUNT_ID });
+      }
       return options.routes(call, parsed.searchParams.get("access_token") ?? "");
     },
     loadSecret: async () => secret,
@@ -167,7 +171,10 @@ function harness(options: {
     loadGalleryItem: async (photoId) => store.get(photoId),
     uploadPhoto: async (photoId) => {
       uploads.push(photoId);
-      return `https://bucket.example/${photoId}.jpg`;
+      return {
+        key: `instagram/2024/${photoId}.jpg`,
+        url: `https://bucket.example/${photoId}.jpg`,
+      };
     },
     putSuccessMetric: async () => {
       metricWrites += 1;
@@ -209,7 +216,81 @@ describe("product types", () => {
     assert.equal(mapToProductType("our engagements"), "wedding-cake");
     assert.equal(mapToProductType("#nikah-cake"), "nikah-cake");
     assert.equal(mapToProductType("#nikkah-cake"), "nikah-cake");
+    assert.equal(mapToProductType("#nikahcake"), "nikah-cake");
+    assert.equal(mapToProductType("#nikkahcake"), "nikah-cake");
+    assert.equal(mapToProductType("#engagementcake"), "engagement-cake");
     assert.equal(mapToProductType(undefined), "wedding-cake");
+  });
+
+  it("recognises birthday and anniversary hashtags without changing the fallback", () => {
+    assert.equal(mapToProductType("#birthdaycake"), "birthday-cake");
+    assert.equal(mapToProductType("#BirthdayCake"), "birthday-cake");
+    assert.equal(mapToProductType("#birthday-cake"), "birthday-cake");
+    assert.equal(mapToProductType("#Birthday-Cake"), "birthday-cake");
+    assert.equal(mapToProductType("#anniversarycake"), "anniversary-cake");
+    assert.equal(mapToProductType("#ANNIVERSARYCAKE"), "anniversary-cake");
+    assert.equal(mapToProductType("#anniversary-cake"), "anniversary-cake");
+    assert.equal(mapToProductType("#Anniversary-Cake"), "anniversary-cake");
+
+    assert.equal(mapToProductType("#weddingcake #birthdaycake"), "wedding-cake");
+    assert.equal(mapToProductType("#anniversarycake #cupcakes"), "anniversary-cake");
+    assert.equal(mapToProductType("#Birthday-Cake #engagement"), "birthday-cake");
+    assert.equal(mapToProductType("#nikah-cake #anniversary-cake"), "nikah-cake");
+
+    assert.equal(mapToProductType("#birthday"), "wedding-cake");
+    assert.equal(mapToProductType("#anniversary"), "wedding-cake");
+    assert.equal(mapToProductType("birthday cake and anniversary cake"), "wedding-cake");
+    assert.equal(mapToProductType(""), "wedding-cake");
+    assert.equal(mapToProductType(undefined), "wedding-cake");
+  });
+
+  it("stores birthday and anniversary carousels as one gallery item", async () => {
+    async function syncCarousel(id: string, caption: string) {
+      const env = harness({
+        routes: (call) => {
+          if (call.pathname.endsWith(`/${id}/children`)) {
+            return jsonResponse(200, {
+              data: [
+                { id: `${id}-a`, media_type: "IMAGE", media_url: `https://cdn.example/${id}-a.jpg` },
+                { id: `${id}-b`, media_type: "IMAGE", media_url: `https://cdn.example/${id}-b.jpg` },
+              ],
+            });
+          }
+          return jsonResponse(200, {
+            data: [
+              media(id, "2026-10-03T00:00:00+0000", {
+                media_type: "CAROUSEL_ALBUM",
+                caption,
+              }),
+            ],
+          });
+        },
+      });
+      const summary = await runInstagramSync(env.deps);
+      return { env, summary };
+    }
+
+    const birthday = await syncCarousel("birthday-album", "#birthdaycake");
+    assert.equal(birthday.summary.saved, 1);
+    const birthdayItem = birthday.env.store.get("birthday-album");
+    assert.equal(birthdayItem?.productType, "birthday-cake");
+    assert.equal(birthdayItem?.mediaType, "CAROUSEL_ALBUM");
+    assert.deepEqual(
+      birthdayItem?.media?.map((asset) => asset.mediaId),
+      ["birthday-album-a", "birthday-album-b"]
+    );
+    assert.equal(birthday.env.uploads().length, 2);
+
+    const anniversary = await syncCarousel("anniversary-album", "#AnniversaryCake");
+    assert.equal(anniversary.summary.saved, 1);
+    const anniversaryItem = anniversary.env.store.get("anniversary-album");
+    assert.equal(anniversaryItem?.productType, "anniversary-cake");
+    assert.equal(anniversaryItem?.mediaType, "CAROUSEL_ALBUM");
+    assert.deepEqual(
+      anniversaryItem?.media?.map((asset) => asset.mediaId),
+      ["anniversary-album-a", "anniversary-album-b"]
+    );
+    assert.equal(anniversary.env.uploads().length, 2);
   });
 });
 
@@ -350,6 +431,7 @@ describe("token lifecycle", () => {
     const env = harness({
       secret: eligibleSecret,
       now,
+      me: jsonResponse(400, revokedBody),
       routes: (call) => {
         if (call.pathname === "/refresh_access_token") {
           return jsonResponse(200, { access_token: REFRESHED_TOKEN, expires_in: 5184000 });
@@ -362,6 +444,82 @@ describe("token lifecycle", () => {
     await assert.rejects(runInstagramSync(env.deps), /code 190/);
     assert.equal(env.saveAttempts(), 0);
     assert.equal(env.secret(), eligibleSecret);
+    assert.equal(env.metricWrites(), 0);
+    assert.equal(env.store.size, 1);
+  });
+
+  it("accepts a token whose account matches the configured account before reading media", async () => {
+    const env = harness({
+      routes: (call) => {
+        if (call.pathname === `/v18.0/${ACCOUNT_ID}/media`) {
+          return jsonResponse(200, { data: [media("checked-post", "2026-10-01T10:00:00+0000")] });
+        }
+        return jsonResponse(500, { error: { message: "unexpected graph call", code: 1 } });
+      },
+    });
+
+    const summary = await runInstagramSync(env.deps);
+    assert.equal(summary.saved, 1);
+    assert.equal(env.calls[0]?.pathname, "/v18.0/me");
+    assert.equal(env.calls.some((call) => call.pathname === `/v18.0/${ACCOUNT_ID}/media`), true);
+    assert.equal(env.metricWrites(), 1);
+    assert.equal(env.store.get("checked-post")?.photoId, "checked-post");
+  });
+
+  it("does not store a replacement token for a different Instagram account", async () => {
+    const otherAccount = "99900000000000000";
+    const env = harness({
+      secret: eligibleSecret,
+      now,
+      me: jsonResponse(200, { id: otherAccount }),
+      routes: (call) => {
+        if (call.pathname === "/refresh_access_token") {
+          return jsonResponse(200, { access_token: REFRESHED_TOKEN, expires_in: 5184000 });
+        }
+        return jsonResponse(500, { error: { message: "should not list media", code: 1 } });
+      },
+    });
+
+    await assert.rejects(runInstagramSync(env.deps), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, new RegExp(otherAccount));
+      assert.match(error.message, new RegExp(ACCOUNT_ID));
+      assert.equal(error.message.includes(RAW_TOKEN), false);
+      assert.equal(error.message.includes(REFRESHED_TOKEN), false);
+      return true;
+    });
+    assert.deepEqual(
+      env.calls.map((call) => call.pathname),
+      ["/refresh_access_token", "/v18.0/me"]
+    );
+    assert.equal(env.saveAttempts(), 0);
+    assert.equal(env.secret(), eligibleSecret);
+    assert.equal(env.metricWrites(), 0);
+    assert.equal(env.store.size, 1);
+    assert.equal(env.store.get("existing-post")?.caption, "kept");
+  });
+
+  it("rejects a different account before media, retries, gallery writes, or success", async () => {
+    const otherAccount = "99900000000000000";
+    const env = harness({
+      me: jsonResponse(200, { id: otherAccount }),
+      routes: () => jsonResponse(500, { error: { message: "should not list media", code: 1 } }),
+    });
+    env.recovery.initialised = true;
+    env.recovery.failures.set("pending-post", BOUNDARY);
+
+    await assert.rejects(runInstagramSync(env.deps), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, new RegExp(otherAccount));
+      assert.match(error.message, new RegExp(ACCOUNT_ID));
+      assert.equal(error.message.includes(RAW_TOKEN), false);
+      return true;
+    });
+    assert.deepEqual(env.calls.map((call) => call.pathname), ["/v18.0/me"]);
+    assert.equal(env.recovery.failures.has("pending-post"), true);
+    assert.equal(env.metricWrites(), 0);
+    assert.equal(env.store.size, 1);
+    assert.equal(env.store.get("existing-post")?.caption, "kept");
   });
 });
 
@@ -459,6 +617,7 @@ describe("pagination and imports", () => {
         if (parsed.pathname.endsWith("/missing.jpg")) return jsonResponse(404, { error: "missing" });
         return imageResponse();
       }
+      if (parsed.pathname === "/v18.0/me") return jsonResponse(200, { id: ACCOUNT_ID });
       return jsonResponse(200, {
         data: [
           media("good-post", "2026-10-04T00:00:00+0000"),
@@ -709,6 +868,7 @@ describe("failed post recovery", () => {
     env.deps.fetch = async (url) => {
       const parsed = new URL(url);
       if (parsed.hostname !== "graph.instagram.com") return imageResponse();
+      if (parsed.pathname === "/v18.0/me") return jsonResponse(200, { id: ACCOUNT_ID });
       if (parsed.pathname.endsWith("/keep-me")) {
         return jsonResponse(200, media("keep-me", "2026-10-01T00:00:00+0000"));
       }
@@ -1364,7 +1524,61 @@ describe("historical continuation and backfill", () => {
       album?.media?.map((asset) => asset.mediaId),
       ["child-a", "child-b"]
     );
+    assert.equal(album?.media?.[0]?.s3Key, "instagram/2026/child-a.jpg");
     assert.equal(album?.media?.[0]?.url, "https://bucket.example/child-a.jpg");
+    assert.equal(album?.media?.[1]?.s3Key, "instagram/2024/child-b.jpg");
     assert.equal(album?.media?.[1]?.url, "https://bucket.example/child-b.jpg");
+  });
+
+  it("records a carousel whose child list is not valid JSON as a failed post", async () => {
+    const env = harness({
+      routes: (call) => {
+        if (call.pathname.endsWith("/album/children")) {
+          return {
+            status: 200,
+            text: async () => "not-json",
+            arrayBuffer: async () => Buffer.from("not-json").buffer,
+          };
+        }
+        return jsonResponse(200, {
+          data: [
+            {
+              id: "album",
+              media_type: "CAROUSEL_ALBUM",
+              permalink: "https://www.instagram.com/p/album/",
+              timestamp: "2026-10-03T00:00:00+0000",
+              caption: "#weddingcake",
+              like_count: 2,
+            },
+          ],
+        });
+      },
+    });
+
+    const errors: unknown[][] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args);
+    };
+
+    try {
+      await assert.rejects(
+        runInstagramSync(env.deps),
+        /Instagram sync incomplete\. 1 post\(s\) failed \(album\)/
+      );
+    } finally {
+      console.error = originalError;
+    }
+
+    const logged = errors.map((entry) => entry.map(String).join(" ")).join("\n");
+    assert.match(
+      logged,
+      /Failed to process media album: Instagram media album response was not valid JSON/
+    );
+    assert.equal(logged.includes("SyntaxError"), false);
+    assert.equal(env.store.has("album"), false);
+    assert.equal(env.uploads().length, 0);
+    assert.equal(env.metricWrites(), 0);
+    assert.equal(env.recovery.failures.has("album"), true);
   });
 });

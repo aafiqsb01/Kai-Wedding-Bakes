@@ -5,7 +5,7 @@ export const contactFormSchema = z.object({
     .string()
     .min(2)
     .max(100)
-    .regex(/^[a-zA-Z\s'-]+$/, {
+    .regex(/^[a-zA-Z '-]+$/, {
       error: 'Name can only contain letters, spaces, hyphens, and apostrophes.',
     }),
   email: z.email({

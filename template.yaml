@@ -16,6 +16,9 @@ Globals:
 
 Resources:
 
+  # samconfig.toml deploys this template with sam build. Esbuild publishes
+  # functions/contact-form-handler/index.ts as index.js, so the handler is
+  # index.handler, matching InstagramSyncFunction.
   ContactFormHandlerFunction:
     Type: AWS::Serverless::Function
     Metadata:
@@ -29,11 +32,10 @@ Resources:
           - functions/contact-form-handler/index.ts
         External:
           - aws-sdk
-
     Properties:
       FunctionName: opulence-contact-form-handler
       CodeUri: aws
-      Handler: functions/contact-form-handler/index.handler
+      Handler: index.handler
       Runtime: nodejs18.x
       Role: arn:aws:iam::640168417037:role/opulence-wedding-bakes-dbaccess-role
 
@@ -45,6 +47,7 @@ Resources:
         Variables:
           AWS_DYNAMODB_TABLE_ENQUIRIES: opulence-wedding-bakes-enquiries
           AWS_SECRETS_RESEND: opulence-wedding-bakes/resend-api
+          NODE_OPTIONS: " --enable-source-maps"
 
       Events:
         SubmitEnquiry:

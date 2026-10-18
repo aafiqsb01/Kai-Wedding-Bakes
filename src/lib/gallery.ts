@@ -9,7 +9,9 @@ type DynamoProductType =
   | "wedding-cake"
   | "nikah-cake"
   | "cupcakes"
-  | "engagement-cake";
+  | "engagement-cake"
+  | "birthday-cake"
+  | "anniversary-cake";
 
 interface DynamoGalleryMedia {
   mediaId?: string;
@@ -41,6 +43,10 @@ function mapProductTypeToCategory(
       return "cupcakes";
     case "engagement-cake":
       return "engagement cake";
+    case "birthday-cake":
+      return "birthday cake";
+    case "anniversary-cake":
+      return "anniversary cake";
     case "wedding-cake":
     default:
       return "wedding cake";
@@ -65,14 +71,27 @@ function toCloudFrontUrl(objectKey: string): string {
   return `${CLOUDFRONT_BASE.replace(/\/+$/, "")}/${objectKey.replace(/^\/+/, "")}`;
 }
 
+function firstMediaKey(item: DynamoGalleryItem): string | null {
+  if (!Array.isArray(item.media)) return null;
+  for (const entry of item.media) {
+    const key = entry.s3Key?.trim();
+    if (key) return key;
+  }
+  return null;
+}
+
+/** Used only when the item has neither a media key nor a backup URL path. */
+function fallbackObjectKey(item: DynamoGalleryItem): string {
+  const parsed = Date.parse(item.syncedAt ?? "");
+  const year = Number.isNaN(parsed) ? new Date().getUTCFullYear() : new Date(parsed).getUTCFullYear();
+  return `instagram/${year}/${item.photoId}.jpg`;
+}
+
 function resolveImageUrl(item: DynamoGalleryItem): string {
   const fromBackup = item.backupUrl?.trim()
     ? getObjectKeyFromBackupUrl(item.backupUrl.trim())
     : null;
-
-  const objectKey =
-    fromBackup ?? `instagram/2026/${item.photoId}.jpg`;
-
+  const objectKey = firstMediaKey(item) ?? fromBackup ?? fallbackObjectKey(item);
   return toCloudFrontUrl(objectKey);
 }
 
@@ -142,26 +161,31 @@ function mapGalleryItemToCake(item: DynamoGalleryItem): Cake {
 
 /**
  * Loads gallery items from DynamoDB and maps them for the frontend.
- * Runs only on the server; never exposes AWS credentials or raw AWS errors.
+ * Follows every scan page. Runs only on the server and does not log records.
  */
 export async function getGalleryCakes(): Promise<Cake[]> {
   try {
-    const result = await docClient.send(
-      new ScanCommand({
-        TableName: GALLERY_TABLE,
-      })
-    );
+    const items: DynamoGalleryItem[] = [];
+    let startKey: Record<string, unknown> | undefined;
 
-    const items = (result.Items ?? []) as DynamoGalleryItem[];
+    do {
+      const result = await docClient.send(
+        new ScanCommand({
+          TableName: GALLERY_TABLE,
+          ...(startKey ? { ExclusiveStartKey: startKey } : {}),
+        })
+      );
+
+      items.push(...((result.Items ?? []) as DynamoGalleryItem[]));
+      startKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
+    } while (startKey);
 
     return items
       .filter((item) => Boolean(item.photoId))
       .map(mapGalleryItemToCake);
   } catch (error) {
-    console.error("Failed to load gallery items from DynamoDB", error);
-    if (error instanceof Error) {
-      console.error(error.name);
-    }
+    const errorName = error instanceof Error ? error.name : "UnknownError";
+    console.error("Failed to load gallery items from DynamoDB", errorName);
     return [];
   }
 }

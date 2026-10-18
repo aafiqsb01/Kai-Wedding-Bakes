@@ -1,6 +1,5 @@
 import type { DynamoGalleryItem, DynamoGalleryMedia, ProductType } from "../../config/database";
 import {
-  InstagramGraphError,
   isInvalidCursorError,
   logGraphError,
   parseGraphError,
@@ -80,7 +79,11 @@ export type SyncDependencies = {
   clearFailure: (mediaId: string) => Promise<void>;
   saveGalleryItem: (item: DynamoGalleryItem) => Promise<void>;
   loadGalleryItem: (photoId: string) => Promise<DynamoGalleryItem | undefined>;
-  uploadPhoto: (photoId: string, body: Buffer, contentType: string) => Promise<string>;
+  uploadPhoto: (
+    photoId: string,
+    body: Buffer,
+    contentType: string
+  ) => Promise<{ key: string; url: string }>;
   putSuccessMetric: () => Promise<void>;
   now: () => Date;
   maxPages: number;
@@ -102,6 +105,10 @@ const HASHTAG_TO_PRODUCT_TYPE: Record<string, ProductType> = {
   cupcakes: "cupcakes",
   engagement: "engagement-cake",
   engagementcake: "engagement-cake",
+  birthdaycake: "birthday-cake",
+  "birthday-cake": "birthday-cake",
+  anniversarycake: "anniversary-cake",
+  "anniversary-cake": "anniversary-cake",
 };
 
 export function mapToProductType(caption?: string): ProductType {
@@ -119,10 +126,12 @@ export function mapToProductType(caption?: string): ProductType {
 }
 
 export async function runInstagramSync(deps: SyncDependencies): Promise<SyncSummary> {
+  const accountId = configuredAccountId(deps);
   const stored = parseStoredToken(await deps.loadSecret());
   const token = isRefreshEligible(stored, deps.now())
-    ? await refreshToken(stored, deps)
+    ? await refreshToken(stored, accountId, deps)
     : stored;
+  await assertTokenMatchesAccount(token.accessToken, accountId, deps);
 
   const loaded = await deps.loadRecoveryState();
   const position: RecoveryPosition = loaded.initialised
@@ -153,7 +162,6 @@ export async function runInstagramSync(deps: SyncDependencies): Promise<SyncSumm
     outstanding.delete(mediaId);
   }
 
-  const accountId = deps.getAccountId();
   const maxPages = deps.maxPages > 0 ? deps.maxPages : DEFAULT_MAX_PAGES;
   let result = await walkFeed({
     deps,
@@ -434,23 +442,30 @@ async function walkFeed(input: {
   return { stop: "page-cap", sawHead, position };
 }
 
+function configuredAccountId(deps: SyncDependencies): string {
+  const accountId = deps.getAccountId().trim();
+  if (!accountId) {
+    throw new Error("Instagram Business Account ID not configured");
+  }
+  return accountId;
+}
+
 async function refreshToken(
   current: StoredInstagramToken,
+  accountId: string,
   deps: SyncDependencies
 ): Promise<StoredInstagramToken> {
   const url = new URL("https://graph.instagram.com/refresh_access_token");
   url.searchParams.set("grant_type", "ig_refresh_token");
   url.searchParams.set("access_token", current.accessToken);
 
-  const { status, body } = await readGraph(deps, url);
-  if (status < 200 || status >= 300) {
-    const error = parseGraphError(status, body);
-    logGraphError(error);
-    throw error;
-  }
-
-  const refreshed = parseRefreshResponse(body);
-  await assertReplacementTokenWorks(refreshed.accessToken, deps);
+  const parsed = await readGraphJson<unknown>(
+    deps,
+    url,
+    "Instagram token refresh returned a non-JSON response"
+  );
+  const refreshed = parseRefreshResponse(JSON.stringify(parsed));
+  await assertTokenMatchesAccount(refreshed.accessToken, accountId, deps);
 
   const serialised = serialiseRefreshedToken(refreshed.accessToken, refreshed.expiresIn, deps.now());
   try {
@@ -467,27 +482,29 @@ async function refreshToken(
   return parseStoredToken(serialised);
 }
 
-async function assertReplacementTokenWorks(accessToken: string, deps: SyncDependencies): Promise<void> {
+async function assertTokenMatchesAccount(
+  accessToken: string,
+  accountId: string,
+  deps: SyncDependencies
+): Promise<void> {
   const url = new URL(`https://graph.instagram.com/${GRAPH_VERSION}/me`);
   url.searchParams.set("fields", "id");
   url.searchParams.set("access_token", accessToken);
 
-  const { status, body } = await readGraph(deps, url);
-  if (status < 200 || status >= 300) {
-    const error = parseGraphError(status, body);
-    logGraphError(error);
-    throw error;
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
-    throw new Error("Replacement Instagram token could not be validated");
-  }
+  const parsed = await readGraphJson<unknown>(
+    deps,
+    url,
+    "Instagram token could not be validated"
+  );
   const id = parsed && typeof parsed === "object" ? (parsed as { id?: unknown }).id : undefined;
   if (typeof id !== "string" || !id.trim()) {
-    throw new Error("Replacement Instagram token could not be validated");
+    throw new Error("Instagram token could not be validated");
+  }
+  const returned = id.trim();
+  if (returned !== accountId) {
+    throw new Error(
+      `Instagram token account ${returned} does not match configured account ${accountId}`
+    );
   }
 }
 
@@ -502,23 +519,15 @@ async function fetchMediaById(
   url.searchParams.set("fields", MEDIA_FIELDS);
   url.searchParams.set("access_token", accessToken);
 
-  const { status, body } = await readGraph(deps, url);
-  if (status < 200 || status >= 300) {
-    const error = parseGraphError(status, body);
-    logGraphError(error);
-    throw error;
+  const media = await readGraphJson<InstagramMedia>(
+    deps,
+    url,
+    `Instagram media ${mediaId} response was not valid JSON`
+  );
+  if (!media || typeof media.id !== "string" || !media.id.trim()) {
+    throw new Error(`Instagram media ${mediaId} could not be read`);
   }
-
-  try {
-    const media = JSON.parse(body) as InstagramMedia;
-    if (!media || typeof media.id !== "string" || !media.id.trim()) {
-      throw new Error(`Instagram media ${mediaId} could not be read`);
-    }
-    return media;
-  } catch (error) {
-    if (error instanceof Error && error.message.includes("could not be read")) throw error;
-    throw new Error(`Instagram media ${mediaId} response was not valid JSON`);
-  }
+  return media;
 }
 
 async function fetchMediaPage(
@@ -533,18 +542,7 @@ async function fetchMediaPage(
   url.searchParams.set("access_token", accessToken);
   if (after) url.searchParams.set("after", after);
 
-  const { status, body } = await readGraph(deps, url);
-  if (status < 200 || status >= 300) {
-    const error = parseGraphError(status, body);
-    logGraphError(error);
-    throw error;
-  }
-
-  try {
-    return JSON.parse(body) as InstagramPage;
-  } catch {
-    throw new Error("Instagram media response was not valid JSON");
-  }
+  return readGraphJson<InstagramPage>(deps, url, "Instagram media response was not valid JSON");
 }
 
 async function readGraph(deps: SyncDependencies, url: URL): Promise<{ status: number; body: string }> {
@@ -565,6 +563,25 @@ async function readGraph(deps: SyncDependencies, url: URL): Promise<{ status: nu
   return { status: response.status, body };
 }
 
+async function readGraphJson<T>(
+  deps: SyncDependencies,
+  url: URL,
+  invalidJsonMessage: string
+): Promise<T> {
+  const { status, body } = await readGraph(deps, url);
+  if (status < 200 || status >= 300) {
+    const error = parseGraphError(status, body);
+    logGraphError(error);
+    throw error;
+  }
+
+  try {
+    return JSON.parse(body) as T;
+  } catch {
+    throw new Error(invalidJsonMessage);
+  }
+}
+
 async function fetchCarouselChildren(
   mediaId: string,
   accessToken: string,
@@ -574,14 +591,11 @@ async function fetchCarouselChildren(
   url.searchParams.set("fields", "id,media_type,media_url");
   url.searchParams.set("access_token", accessToken);
 
-  const { status, body } = await readGraph(deps, url);
-  if (status < 200 || status >= 300) {
-    const error = parseGraphError(status, body);
-    logGraphError(error);
-    throw error;
-  }
-
-  const data = JSON.parse(body) as { data?: InstagramChildMedia[] };
+  const data = await readGraphJson<{ data?: InstagramChildMedia[] }>(
+    deps,
+    url,
+    `Instagram media ${mediaId} response was not valid JSON`
+  );
   return data.data ?? [];
 }
 
@@ -598,8 +612,13 @@ async function downloadMediaFromUrl(url: string, deps: SyncDependencies): Promis
   return Buffer.from(await response.arrayBuffer());
 }
 
-function buildS3Key(photoId: string): string {
-  return `instagram/${new Date().getFullYear()}/${photoId}.jpg`;
+function objectKeyFromUrl(url: string): string | null {
+  try {
+    const key = new URL(url).pathname.replace(/^\/+/, "").trim();
+    return key || null;
+  } catch {
+    return null;
+  }
 }
 
 async function downloadAndUploadImage(
@@ -608,8 +627,8 @@ async function downloadAndUploadImage(
   deps: SyncDependencies
 ): Promise<DynamoGalleryMedia> {
   const imageBuffer = await downloadMediaFromUrl(mediaUrl, deps);
-  const s3Url = await deps.uploadPhoto(mediaId, imageBuffer, "image/jpeg");
-  return { mediaId, s3Key: buildS3Key(mediaId), url: s3Url };
+  const uploaded = await deps.uploadPhoto(mediaId, imageBuffer, "image/jpeg");
+  return { mediaId, s3Key: uploaded.key, url: uploaded.url };
 }
 
 function storedImageUrl(item: DynamoGalleryItem | undefined): string | null {
@@ -621,9 +640,11 @@ function storedImageUrl(item: DynamoGalleryItem | undefined): string | null {
 function storedChild(item: DynamoGalleryItem | undefined, childId: string): DynamoGalleryMedia | null {
   const match = item?.media?.find((asset) => asset.mediaId === childId && asset.url.trim());
   if (!match) return null;
+  const s3Key = match.s3Key.trim() || objectKeyFromUrl(match.url);
+  if (!s3Key) return null;
   return {
     mediaId: match.mediaId,
-    s3Key: match.s3Key.trim() || buildS3Key(childId),
+    s3Key,
     url: match.url,
   };
 }
@@ -708,7 +729,7 @@ async function processInstagramMedia(
   }
 
   const uploaded = existingUrl
-    ? { mediaId: media.id, s3Key: buildS3Key(media.id), url: existingUrl }
+    ? { mediaId: media.id, s3Key: objectKeyFromUrl(existingUrl) ?? "", url: existingUrl }
     : await downloadAndUploadImage(media.id, media.media_url as string, deps);
   const productType = mapToProductType(media.caption);
   await deps.saveGalleryItem({
@@ -723,8 +744,4 @@ async function processInstagramMedia(
     mediaType: "IMAGE",
   });
   return "saved";
-}
-
-export function isReauthorisationError(error: unknown): boolean {
-  return error instanceof InstagramGraphError && error.reauthorisationRequired;
 }

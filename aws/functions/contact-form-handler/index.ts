@@ -22,12 +22,35 @@ interface HandlerResponse {
   body: string;
 }
 
+type OutboundEmail = {
+  from: string;
+  to: string;
+  subject: string;
+  html: string;
+};
+
+export type ContactFormDeps = {
+  saveEnquiry: (enquiry: DynamoEnquiry) => Promise<void>;
+  sendEmail: (message: OutboundEmail) => Promise<void>;
+  now: () => Date;
+  createId: () => string;
+};
+
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "content-type",
   "Access-Control-Allow-Methods": "POST,OPTIONS",
   "Content-Type": "application/json",
 };
+
+/** Same practical email check as Zod 4 z.email(). */
+const EMAIL_PATTERN =
+  /^(?!\.)(?!.*\.\.)([A-Za-z0-9_'+\-\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$/;
+/** ASCII letters, a literal space, apostrophes, and hyphens. Not `\s`. */
+const NAME_PATTERN = /^[a-zA-Z '-]+$/;
+
+const CONFIRMATION_FROM = "Opulence Wedding Bakes <onboarding@resend.dev>";
+const NOTIFICATION_FROM = "Opulence Wedding Bakes <onboarding@resend.dev>";
 
 function jsonResponse(statusCode: number, payload: unknown): HandlerResponse {
   return {
@@ -37,7 +60,72 @@ function jsonResponse(statusCode: number, payload: unknown): HandlerResponse {
   };
 }
 
-function parseRequestBody(event: any): ContactFormPayload {
+function invalidPayloadResponse(): HandlerResponse {
+  console.warn("Contact form rejected: invalid payload");
+  return jsonResponse(400, { error: "Missing required fields" });
+}
+
+/**
+ * Website contactFormSchema rules, applied to untrusted JSON.
+ * Strings are not trimmed except for the event-date non-blank check.
+ */
+export function validateContactEnquiry(input: unknown): ContactFormPayload | null {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+
+  const record = input as Record<string, unknown>;
+  const { name, email, eventDate, venue, enquiry } = record;
+
+  if (typeof name !== "string" || name.length < 2 || name.length > 100 || !NAME_PATTERN.test(name)) {
+    return null;
+  }
+  if (typeof email !== "string" || !EMAIL_PATTERN.test(email)) return null;
+  if (typeof eventDate !== "string" || eventDate.length < 1 || eventDate.trim().length === 0) {
+    return null;
+  }
+  if (typeof venue !== "string" || venue.length < 2) return null;
+  if (typeof enquiry !== "string" || enquiry.length < 10 || enquiry.length > 1000) return null;
+
+  return { name, email, eventDate, venue, enquiry };
+}
+
+/** Escape text once, before any intentional HTML such as line-break tags is added. */
+export function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+export function confirmationEmailHtml(customerName: string): string {
+  return `
+    <h2>Thank you, ${escapeHtml(customerName)}!</h2>
+    <p/>
+    <p>We've received your wedding cake enquiry and will get back to you within 24 hours.</p>
+    <p>In the meantime, feel free to check out our gallery for inspiration!</p>
+    <p>Best regards,<br/>Kai Wedding Bakes</p>
+  `;
+}
+
+export function notificationEmailHtml(enquiry: DynamoEnquiry): string {
+  const message = escapeHtml(enquiry.enquiry).replace(/\n/g, "<br/>");
+
+  return `
+    <h3>New enquiry</h3>
+    <p><strong>Name:</strong> ${escapeHtml(enquiry.name)}</p>
+    <p><strong>Email:</strong> ${escapeHtml(enquiry.email)}</p>
+    <p><strong>Event Date:</strong> ${escapeHtml(enquiry.eventDate)}</p>
+    <p><strong>Venue:</strong> ${escapeHtml(enquiry.venue)}</p>
+    <p><strong>Message:</strong></p>
+    <p>${message}</p>
+    <hr/>
+    <p><small>Enquiry ID: ${enquiry.enquiryId}</small></p>
+    <p><small>Received: ${enquiry.createdAt}</small></p>
+  `;
+}
+
+function readRequestBody(event: { body?: unknown; isBase64Encoded?: boolean }): unknown {
   let rawBody = event.body;
   if (rawBody == null) {
     throw new Error("Missing request body");
@@ -48,13 +136,35 @@ function parseRequestBody(event: any): ContactFormPayload {
   return typeof rawBody === "string" ? JSON.parse(rawBody) : rawBody;
 }
 
-// ============================================
-// Lambda Handler
-// ============================================
+function logHandlerError(enquiryId: string | undefined, error: unknown): void {
+  const errorName = error instanceof Error ? error.name : "UnknownError";
+  console.error(
+    JSON.stringify({
+      message: "Contact form handler failed",
+      enquiryId: enquiryId ?? null,
+      errorName,
+    })
+  );
+}
 
-export const handler: Handler = async (event: any): Promise<HandlerResponse> => {
-  console.log("📧 Contact form handler Lambda started");
-  console.log("Event:", JSON.stringify(event, null, 2));
+async function sendWithResend(message: OutboundEmail): Promise<void> {
+  const resendApiKey = await getResendApiKey();
+  const resend = new Resend(resendApiKey);
+  await resend.emails.send(message);
+}
+
+const defaultDeps: ContactFormDeps = {
+  saveEnquiry,
+  sendEmail: sendWithResend,
+  now: () => new Date(),
+  createId: () => randomUUID(),
+};
+
+export async function processContactForm(
+  event: any,
+  deps: ContactFormDeps = defaultDeps
+): Promise<HandlerResponse> {
+  console.log("Contact form handler Lambda started");
 
   // API Gateway / Function URL CORS preflight
   const method = event.requestContext?.http?.method || event.httpMethod || event.requestContext?.httpMethod;
@@ -62,30 +172,23 @@ export const handler: Handler = async (event: any): Promise<HandlerResponse> => 
     return jsonResponse(204, {});
   }
 
+  let parsed: unknown;
   try {
-    // Parse request body (API Gateway may base64-encode the payload)
-    const formData = parseRequestBody(event);
+    parsed = readRequestBody(event);
+  } catch {
+    return invalidPayloadResponse();
+  }
 
-    // Validate required fields
-    if (!formData.name || !formData.email || !formData.eventDate || !formData.venue || !formData.enquiry) {
-      console.warn("❌ Missing required fields");
-      return jsonResponse(400, { error: "Missing required fields" });
-    }
+  const formData = validateContactEnquiry(parsed);
+  if (!formData) {
+    return invalidPayloadResponse();
+  }
 
-    // Create enquiry record
-    // #region agent log
-    let enquiryId: string;
-    try {
-      enquiryId = randomUUID();
-      fetch('http://127.0.0.1:7624/ingest/4a5b035c-2516-4325-be36-20d27c93f202',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d995f0'},body:JSON.stringify({sessionId:'d995f0',runId:'post-fix',hypothesisId:'A',location:'contact-form-handler/index.ts:enquiryId',message:'randomUUID succeeded',data:{enquiryIdPrefix:enquiryId.slice(0,8),hasCryptoGlobal:typeof (globalThis as { crypto?: unknown }).crypto !== 'undefined'},timestamp:Date.now()})}).catch(()=>{});
-      console.log(JSON.stringify({sessionId:'d995f0',hypothesisId:'A',message:'randomUUID succeeded',enquiryIdPrefix:enquiryId.slice(0,8)}));
-    } catch (cryptoErr) {
-      fetch('http://127.0.0.1:7624/ingest/4a5b035c-2516-4325-be36-20d27c93f202',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d995f0'},body:JSON.stringify({sessionId:'d995f0',runId:'post-fix',hypothesisId:'A',location:'contact-form-handler/index.ts:enquiryId',message:'randomUUID failed',data:{error:cryptoErr instanceof Error ? cryptoErr.message : String(cryptoErr)},timestamp:Date.now()})}).catch(()=>{});
-      console.error(JSON.stringify({sessionId:'d995f0',hypothesisId:'A',message:'randomUUID failed',error:cryptoErr instanceof Error ? cryptoErr.message : String(cryptoErr)}));
-      throw cryptoErr;
-    }
-    // #endregion
-    const now = new Date().toISOString();
+  let enquiryId: string | undefined;
+
+  try {
+    enquiryId = deps.createId();
+    const now = deps.now().toISOString();
 
     const enquiry: DynamoEnquiry = {
       enquiryId,
@@ -100,87 +203,39 @@ export const handler: Handler = async (event: any): Promise<HandlerResponse> => 
     };
 
     // Save to DynamoDB
-    console.log(`💾 Saving enquiry to DynamoDB: ${enquiryId}`);
-    await saveEnquiry(enquiry);
+    console.log(`Saving enquiry ${enquiryId}`);
+    await deps.saveEnquiry(enquiry);
+
+    const businessEmail = process.env.CONTACT_FORM_RECIPIENT_EMAIL || "opulenceweddingcakes@gmail.com";
 
     // Send confirmation email to user
-    console.log(`📬 Sending confirmation email to: ${formData.email}`);
-    await sendConfirmationEmail(formData.email, formData.name);
+    console.log(`Sending confirmation email for enquiry ${enquiryId}`);
+    await deps.sendEmail({
+      from: CONFIRMATION_FROM,
+      to: formData.email,
+      subject: "We've received your enquiry - Opulence Wedding Bakes",
+      html: confirmationEmailHtml(formData.name),
+    });
 
     // Send notification email to business
-    console.log(`📬 Sending notification email to business`);
-    await sendNotificationEmail(enquiry);
+    console.log(`Sending notification email for enquiry ${enquiryId}`);
+    await deps.sendEmail({
+      from: NOTIFICATION_FROM,
+      to: businessEmail,
+      subject: `New Enquiry from ${enquiry.name}`,
+      html: notificationEmailHtml(enquiry),
+    });
 
     return jsonResponse(200, {
       message: "✅ Enquiry received successfully",
       enquiryId,
     });
   } catch (error) {
-    console.error("❌ Contact form handler failed:", error);
+    logHandlerError(enquiryId, error);
     return jsonResponse(500, {
       error: "Failed to process enquiry",
-      details: error instanceof Error ? error.message : String(error),
     });
   }
-};
-
-// ============================================
-// Email Functions
-// ============================================
-
-/**
- * Send confirmation email to customer
- */
-async function sendConfirmationEmail(customerEmail: string, customerName: string): Promise<void> {
-  const resendApiKey = await getResendApiKey();
-  const resend = new Resend(resendApiKey);
-
-  const emailHtml = `
-    <h2>Thank you, ${customerName}!</h2>
-    <p/>
-    <p>We've received your wedding cake enquiry and will get back to you within 24 hours.</p>
-    <p>In the meantime, feel free to check out our gallery for inspiration!</p>
-    <p>Best regards,<br/>Kai Wedding Bakes</p>
-  `;
-
-  await resend.emails.send({
-    from: "Opulence Wedding Bakes <onboarding@resend.dev>",
-    to: customerEmail,
-    subject: "We've received your enquiry - Opulence Wedding Bakes",
-    html: emailHtml,
-  });
-
-  console.log(`✅ Confirmation email sent to ${customerEmail}`);
 }
 
-/**
- * Send notification email to business (from Secrets Manager)
- */
-async function sendNotificationEmail(enquiry: DynamoEnquiry): Promise<void> {
-  const resendApiKey = await getResendApiKey();
-  const businessEmail = process.env.CONTACT_FORM_RECIPIENT_EMAIL || "opulenceweddingcakes@gmail.com";
-
-  const resend = new Resend(resendApiKey);
-
-  const emailHtml = `
-    <h3>New enquiry</h3>
-    <p><strong>Name:</strong> ${enquiry.name}</p>
-    <p><strong>Email:</strong> ${enquiry.email}</p>
-    <p><strong>Event Date:</strong> ${enquiry.eventDate}</p>
-    <p><strong>Venue:</strong> ${enquiry.venue}</p>
-    <p><strong>Message:</strong></p>
-    <p>${enquiry.enquiry.replace(/\n/g, "<br/>")}</p>
-    <hr/>
-    <p><small>Enquiry ID: ${enquiry.enquiryId}</small></p>
-    <p><small>Received: ${enquiry.createdAt}</small></p>
-  `;
-
-  await resend.emails.send({
-    from: "Opulence Wedding Bakes <onboarding@resend.dev>",
-    to: businessEmail,
-    subject: `New Enquiry from ${enquiry.name}`,
-    html: emailHtml,
-  });
-
-  console.log(`✅ Notification email sent to ${businessEmail}`);
-}
+export const handler: Handler = (event) => processContactForm(event);
