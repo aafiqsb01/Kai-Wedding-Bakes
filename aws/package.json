@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "test": "esbuild ../tests/aws/instagram-sync/sync.test.ts --bundle --platform=node --format=cjs --outfile=dist-test/sync.test.cjs --external:node:test --external:node:assert/strict && esbuild ../tests/aws/contact-form-handler/index.test.ts --bundle --platform=node --format=cjs --outfile=dist-test/contact-form-handler.test.cjs --external:node:test --external:node:assert/strict && node --test dist-test/sync.test.cjs dist-test/contact-form-handler.test.cjs"
+    "test": "esbuild ../tests/aws/instagram-sync/sync.test.ts --bundle --platform=node --format=cjs --outfile=dist-test/sync.test.cjs --external:node:test --external:node:assert/strict && esbuild ../tests/aws/instagram-sync/reclassify-gallery.test.ts --bundle --platform=node --format=cjs --outfile=dist-test/reclassify-gallery.test.cjs --external:node:test --external:node:assert/strict && esbuild ../tests/aws/contact-form-handler/index.test.ts --bundle --platform=node --format=cjs --outfile=dist-test/contact-form-handler.test.cjs --external:node:test --external:node:assert/strict && node --test dist-test/sync.test.cjs dist-test/reclassify-gallery.test.cjs dist-test/contact-form-handler.test.cjs",
+    "reclassify-gallery-product-types": "esbuild functions/instagram-sync/reclassify-gallery.ts --bundle --platform=node --format=cjs --outfile=dist-test/reclassify-gallery.cjs && node dist-test/reclassify-gallery.cjs"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"
@@ -13,6 +14,7 @@
     "@aws-sdk/client-dynamodb": "^3.1123.0",
     "@aws-sdk/client-s3": "^3.1125.0",
     "@aws-sdk/client-secrets-manager": "^3.1123.0",
+    "@aws-sdk/client-sts": "^3.1123.0",
     "@aws-sdk/lib-dynamodb": "^3.1123.0",
     "node-fetch": "^2.7.0",
     "resend": "^6.24.0"

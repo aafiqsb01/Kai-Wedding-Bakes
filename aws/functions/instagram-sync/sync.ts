@@ -111,18 +111,27 @@ const HASHTAG_TO_PRODUCT_TYPE: Record<string, ProductType> = {
   "anniversary-cake": "anniversary-cake",
 };
 
-export function mapToProductType(caption?: string): ProductType {
-  if (!caption) return "wedding-cake";
+/**
+ * The first recognised product-type hashtag in a caption.
+ * Returns null when the caption has no recognised hashtag. mapToProductType
+ * still falls back to wedding-cake for the scheduled sync.
+ */
+export function recognisedProductType(caption?: string): ProductType | null {
+  if (!caption) return null;
 
   const matches = caption.match(/#[\w-]+/g);
-  if (!matches) return "wedding-cake";
+  if (!matches) return null;
 
   for (const tag of matches) {
     const productType = HASHTAG_TO_PRODUCT_TYPE[tag.slice(1).toLowerCase()];
     if (productType) return productType;
   }
 
-  return "wedding-cake";
+  return null;
+}
+
+export function mapToProductType(caption?: string): ProductType {
+  return recognisedProductType(caption) ?? "wedding-cake";
 }
 
 export async function runInstagramSync(deps: SyncDependencies): Promise<SyncSummary> {
