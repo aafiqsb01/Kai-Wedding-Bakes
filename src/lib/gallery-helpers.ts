@@ -45,8 +45,10 @@ export type GallerySection = {
 
 /**
  * Build gallery page sections: one carousel per product type,
- * each sorted by instagramTimestamp (fallback: syncedAt) desc
- * and capped at the latest N posts.
+ * ordered by how many gallery items belong to that type (highest first).
+ * Equal counts keep the previous order: most recently active type first.
+ * Items inside a section stay sorted by instagramTimestamp (fallback: syncedAt)
+ * desc and are capped at the latest N posts. Types with no items are omitted.
  */
 export function getGallerySections(
   cakes: Cake[],
@@ -70,18 +72,22 @@ export function getGallerySections(
       label: formatProductTypeLabel(
         productType === "other" ? undefined : productType
       ),
-      items: sorted.slice(0, limitPerType),
+      items: sorted,
     });
   }
 
-  // Most recently active product types first
   sections.sort((a, b) => {
+    const byCount = b.items.length - a.items.length;
+    if (byCount !== 0) return byCount;
     const aLatest = sortTimestampOf(a.items[0]!);
     const bLatest = sortTimestampOf(b.items[0]!);
     return bLatest.localeCompare(aLatest);
   });
 
-  return sections;
+  return sections.map((section) => ({
+    ...section,
+    items: section.items.slice(0, limitPerType),
+  }));
 }
 
 /**
