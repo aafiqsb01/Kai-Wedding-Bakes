@@ -16,6 +16,9 @@ Globals:
 
 Resources:
 
+  # samconfig.toml deploys this template with sam build. Esbuild publishes
+  # functions/contact-form-handler/index.ts as index.js, so the handler is
+  # index.handler, matching InstagramSyncFunction.
   ContactFormHandlerFunction:
     Type: AWS::Serverless::Function
     Metadata:
@@ -29,11 +32,10 @@ Resources:
           - functions/contact-form-handler/index.ts
         External:
           - aws-sdk
-
     Properties:
       FunctionName: opulence-contact-form-handler
       CodeUri: aws
-      Handler: functions/contact-form-handler/index.handler
+      Handler: index.handler
       Runtime: nodejs18.x
       Role: arn:aws:iam::640168417037:role/opulence-wedding-bakes-dbaccess-role
 
@@ -45,6 +47,7 @@ Resources:
         Variables:
           AWS_DYNAMODB_TABLE_ENQUIRIES: opulence-wedding-bakes-enquiries
           AWS_SECRETS_RESEND: opulence-wedding-bakes/resend-api
+          NODE_OPTIONS: " --enable-source-maps"
 
       Events:
         SubmitEnquiry:
@@ -67,6 +70,29 @@ Resources:
         AllowHeaders:
           - content-type
         MaxAge: 600
+
+  # Operational retry state. Kept off the gallery table so a cursor or failed
+  # media id cannot appear as a gallery post. Retain and point-in-time recovery
+  # so a stack update cannot drop posts that still need another run.
+  InstagramSyncRecoveryTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: opulence-wedding-bakes-instagram-sync-recovery
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
 
   InstagramSyncFunction:
     Type: AWS::Serverless::Function
@@ -109,9 +135,15 @@ Resources:
       Environment:
         Variables:
           AWS_DYNAMODB_TABLE_GALLERY: opulence-wedding-bakes-gallery
+          AWS_DYNAMODB_TABLE_INSTAGRAM_SYNC_RECOVERY: !Ref InstagramSyncRecoveryTable
           AWS_S3_BUCKET_NAME: opulence-wedding-bakes-photos
           AWS_SECRETS_INSTAGRAM: opulence-wedding-bakes/instagram-access-token
           INSTAGRAM_BUSINESS_ACCOUNT_ID: !Sub '{{resolve:secretsmanager:opulence-wedding-bakes/instagram-account-id:SecretString}}'
+          # Stop a walk before this many 25-post pages. Progress is saved and the next run resumes.
+          INSTAGRAM_SYNC_MAX_PAGES: "10"
+          # One-time backfill floor. The media edge has no time filter; sync pages newest-first
+          # until posts are strictly older than this instant. Not a Graph query parameter.
+          INSTAGRAM_SYNC_BACKFILL_UNTIL: "2026-09-28T00:00:00.000Z"
 
       Events:
         InstagramSyncSchedule:
@@ -119,6 +151,100 @@ Resources:
           Properties:
             Schedule: rate(6 hours)
             Enabled: true
+            # EventBridge does not retry a failed invocation. The next six-hour
+            # schedule is the retry, using the cursor and failure rows already saved.
+            # A revoked token is not replayed immediately.
+            RetryPolicy:
+              MaximumRetryAttempts: 0
+
+  # The function Role above is an existing role, so SAM Policies on the
+  # function are not applied. This policy is what the next deploy attaches,
+  # including least-privilege access to the recovery table.
+  InstagramSyncMetricAndTokenPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: opulence-instagram-sync-metric-and-token
+      Roles:
+        - opulence-wedding-bakes-dbaccess-role
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - cloudwatch:PutMetricData
+            Resource: "*"
+            Condition:
+              StringEquals:
+                cloudwatch:namespace: OpulenceWeddingBakes/InstagramSync
+          - Effect: Allow
+            Action:
+              - secretsmanager:PutSecretValue
+            Resource: !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:opulence-wedding-bakes/instagram-access-token-*"
+          - Effect: Allow
+            Action:
+              - dynamodb:PutItem
+              - dynamodb:DeleteItem
+              - dynamodb:Query
+            Resource: !GetAtt InstagramSyncRecoveryTable.Arn
+
+  InstagramSyncAlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: opulence-instagram-sync-alerts
+      # The email subscription stays PendingConfirmation until the inbox owner
+      # opens the AWS confirmation message. CloudWatch cannot deliver alerts
+      # before that confirmation. This template does not prove delivery.
+      Subscription:
+        - Protocol: email
+          Endpoint: opulenceweddingcakes@gmail.com
+
+  InstagramSyncAlarmTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref InstagramSyncAlarmTopic
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref InstagramSyncAlarmTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  # SyncSuccess is emitted only after a complete import.
+  # Namespace: OpulenceWeddingBakes/InstagramSync
+  # Metric: SyncSuccess
+  # Dimension: FunctionName = opulence-instagram-sync
+  # Unit: Count
+  # One datapoint per successful run. Twelve 1-hour periods must all be
+  # missing or below 1 before the alarm fires, so one success inside any
+  # hour of the last 12 hours keeps it healthy. That matches a 6-hour
+  # schedule without false alarms from period alignment.
+  InstagramSyncStaleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: opulence-instagram-sync-no-success-12h
+      AlarmDescription: Instagram gallery sync has not completed successfully for 12 hours.
+      Namespace: OpulenceWeddingBakes/InstagramSync
+      MetricName: SyncSuccess
+      Dimensions:
+        - Name: FunctionName
+          Value: opulence-instagram-sync
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 12
+      DatapointsToAlarm: 12
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions:
+        - !Ref InstagramSyncAlarmTopic
+      OKActions:
+        - !Ref InstagramSyncAlarmTopic
 
 Outputs:
 

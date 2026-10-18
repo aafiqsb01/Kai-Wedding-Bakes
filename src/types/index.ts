@@ -1,7 +1,13 @@
 export interface Cake {
   id: string;
   title: string;
-  category: "wedding cake" | "nikkah cake" | "engagement cake" | "cupcakes";
+  category:
+    | "wedding cake"
+    | "nikkah cake"
+    | "engagement cake"
+    | "cupcakes"
+    | "birthday cake"
+    | "anniversary cake";
   /** Cover / primary image (first carousel slide, or the only image). */
   imageUrl: string;
   /**
@@ -27,7 +33,6 @@ export interface Service {
   id: string;
   title: string;
   description: string;
-  icon: string;
 }
 
 export interface ContactFormData {

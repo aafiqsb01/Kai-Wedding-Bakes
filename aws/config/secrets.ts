@@ -1,4 +1,4 @@
-import { SecretsManagerClient, GetSecretValueCommand } from "@aws-sdk/client-secrets-manager";
+import { SecretsManagerClient, GetSecretValueCommand, PutSecretValueCommand } from "@aws-sdk/client-secrets-manager";
 
 // Initialize Secrets Manager client
 const secretsClient = new SecretsManagerClient({ region: process.env.AWS_REGION || "eu-west-2" });
@@ -40,24 +40,6 @@ export async function getSecret(secretName: string): Promise<string> {
 }
 
 /**
- * Fetch Instagram API token from Secrets Manager
- * Falls back to environment variable if not found
- */
-export async function getInstagramToken(): Promise<string> {
-  try {
-    const secretName = process.env.AWS_SECRETS_INSTAGRAM || "opulence/instagram-api";
-    return await getSecret(secretName);
-  } catch (error) {
-    // Fallback to env var
-    const token = process.env.INSTAGRAM_ACCESS_TOKEN;
-    if (!token) {
-      throw new Error("Instagram token not found in Secrets Manager or environment");
-    }
-    return token;
-  }
-}
-
-/**
  * Fetch Resend API key from Secrets Manager
  * Falls back to environment variable if not found
  */
@@ -65,13 +47,39 @@ export async function getResendApiKey(): Promise<string> {
   try {
     const secretName = process.env.AWS_SECRETS_RESEND || "opulence/resend-api";
     return await getSecret(secretName);
-  } catch (error) {
+  } catch {
     // Fallback to env var
     const key = process.env.RESEND_API_KEY;
     if (!key) {
       throw new Error("Resend API key not found in Secrets Manager or environment");
     }
     return key;
+  }
+}
+
+/**
+ * Replace a secret only after the caller has validated the new value.
+ * The cache is updated only when Secrets Manager accepts the write.
+ */
+export async function putSecret(secretName: string, secretValue: string): Promise<void> {
+  if (!secretValue.trim()) {
+    throw new Error(`Refusing to store an empty secret: ${secretName}`);
+  }
+
+  try {
+    await secretsClient.send(
+      new PutSecretValueCommand({
+        SecretId: secretName,
+        SecretString: secretValue,
+      })
+    );
+    secretsCache.set(secretName, secretValue);
+  } catch (error) {
+    const name = error instanceof Error ? error.name : "UnknownError";
+    console.error(`Failed to update secret ${secretName}: ${name}`);
+    throw new Error(
+      `Could not update secret: ${secretName}. The previous value was left unchanged.`
+    );
   }
 }
 
