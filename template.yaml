@@ -148,7 +148,9 @@ Resources:
           Properties:
             Schedule: rate(6 hours)
             Enabled: true
-            # The six-hour schedule is the retry. Do not immediately replay a revoked token.
+            # EventBridge does not retry a failed invocation. The next six-hour
+            # schedule is the retry, using the cursor and failure rows already saved.
+            # A revoked token is not replayed immediately.
             RetryPolicy:
               MaximumRetryAttempts: 0
 
@@ -186,6 +188,9 @@ Resources:
     Type: AWS::SNS::Topic
     Properties:
       TopicName: opulence-instagram-sync-alerts
+      # The email subscription stays PendingConfirmation until the inbox owner
+      # opens the AWS confirmation message. CloudWatch cannot deliver alerts
+      # before that confirmation. This template does not prove delivery.
       Subscription:
         - Protocol: email
           Endpoint: opulenceweddingcakes@gmail.com

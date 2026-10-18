@@ -1,7 +1,7 @@
 import { CloudWatchClient, PutMetricDataCommand } from "@aws-sdk/client-cloudwatch";
 import { Handler } from "aws-lambda";
 import fetch from "node-fetch";
-import { saveGalleryItem } from "../../config/database";
+import { getGalleryItem, saveGalleryItem } from "../../config/database";
 import {
   clearInstagramRecoveryFailure,
   initialiseInstagramRecovery,
@@ -62,6 +62,7 @@ export const handler: Handler = async () => {
       recordInstagramRecoveryFailure(mediaId, instagramTimestamp, now().toISOString()),
     clearFailure: (mediaId) => clearInstagramRecoveryFailure(mediaId),
     saveGalleryItem,
+    loadGalleryItem: (photoId) => getGalleryItem(photoId),
     uploadPhoto: (photoId, body, contentType) => uploadPhotoToS3(photoId, body, contentType),
     putSuccessMetric: async () => {
       await cloudWatch.send(

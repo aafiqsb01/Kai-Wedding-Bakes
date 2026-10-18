@@ -47,7 +47,7 @@ export async function getInstagramToken(): Promise<string> {
   try {
     const secretName = process.env.AWS_SECRETS_INSTAGRAM || "opulence/instagram-api";
     return await getSecret(secretName);
-  } catch (error) {
+  } catch {
     // Fallback to env var
     const token = process.env.INSTAGRAM_ACCESS_TOKEN;
     if (!token) {
@@ -65,7 +65,7 @@ export async function getResendApiKey(): Promise<string> {
   try {
     const secretName = process.env.AWS_SECRETS_RESEND || "opulence/resend-api";
     return await getSecret(secretName);
-  } catch (error) {
+  } catch {
     // Fallback to env var
     const key = process.env.RESEND_API_KEY;
     if (!key) {

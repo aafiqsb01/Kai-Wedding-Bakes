@@ -1,5 +1,5 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
 
 // Initialize DynamoDB client
 const dynamoDbClient = new DynamoDBClient({ region: process.env.AWS_REGION || "eu-west-2" });
@@ -114,42 +114,6 @@ export async function saveGalleryItem(item: DynamoGalleryItem): Promise<void> {
     Item: item,
   });
   await documentClient.send(command);
-}
-
-/**
- * Newest Instagram timestamp already stored, or null when the gallery has none.
- * Sync does not use this as its import boundary. The recovery row owns the
- * backfill floor and any resume cursor. Does not delete or rewrite rows.
- */
-export async function getGallerySyncBoundary(): Promise<string | null> {
-  let newestMs: number | null = null;
-  let newestRaw: string | null = null;
-  let startKey: Record<string, unknown> | undefined;
-
-  do {
-    const result = await documentClient.send(
-      new ScanCommand({
-        TableName: TABLES.GALLERY,
-        ProjectionExpression: "instagramTimestamp",
-        ExclusiveStartKey: startKey,
-      })
-    );
-
-    for (const item of result.Items ?? []) {
-      const raw = item.instagramTimestamp;
-      if (typeof raw !== "string" || !raw.trim()) continue;
-      const ms = Date.parse(raw);
-      if (Number.isNaN(ms)) continue;
-      if (newestMs === null || ms > newestMs) {
-        newestMs = ms;
-        newestRaw = raw;
-      }
-    }
-
-    startKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
-  } while (startKey);
-
-  return newestRaw;
 }
 
 // Fetch all gallery items

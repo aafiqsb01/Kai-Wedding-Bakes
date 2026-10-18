@@ -79,6 +79,7 @@ export type SyncDependencies = {
   recordFailure: (mediaId: string, instagramTimestamp: string | undefined) => Promise<void>;
   clearFailure: (mediaId: string) => Promise<void>;
   saveGalleryItem: (item: DynamoGalleryItem) => Promise<void>;
+  loadGalleryItem: (photoId: string) => Promise<DynamoGalleryItem | undefined>;
   uploadPhoto: (photoId: string, body: Buffer, contentType: string) => Promise<string>;
   putSuccessMetric: () => Promise<void>;
   now: () => Date;
@@ -124,7 +125,7 @@ export async function runInstagramSync(deps: SyncDependencies): Promise<SyncSumm
     : stored;
 
   const loaded = await deps.loadRecoveryState();
-  let position: RecoveryPosition = loaded.initialised
+  const position: RecoveryPosition = loaded.initialised
     ? copyPosition(loaded)
     : emptyBackfill(deps.backfillUntil);
   if (!loaded.initialised) {
@@ -209,7 +210,7 @@ export async function runInstagramSync(deps: SyncDependencies): Promise<SyncSumm
   return summary;
 }
 
-type WalkStop = "complete" | "page-cap" | "missing-cursor" | "failures";
+type WalkStop = "complete" | "page-cap" | "missing-cursor" | "repeated-cursor" | "failures";
 
 function incompleteError(
   stop: WalkStop,
@@ -226,6 +227,11 @@ function incompleteError(
   if (stop === "missing-cursor") {
     return new Error(
       "Instagram returned another page without a cursor. Sync stopped before completion. Posts already written were kept."
+    );
+  }
+  if (stop === "repeated-cursor") {
+    return new Error(
+      "Instagram repeated a paging cursor. Sync stopped before completion. Posts already written were kept."
     );
   }
   const boundary = position.phase === "live" ? position.liveWatermark : position.backfillUntil;
@@ -309,6 +315,17 @@ async function walkFeed(input: {
   let rewalked = false;
   let pages = 0;
 
+  const restartFromHead = (reason: string) => {
+    console.error(reason);
+    rewalked = true;
+    after = undefined;
+    seekAnchor = true;
+    sawAnchor = false;
+    sawHead = true;
+    position.resumeCursor = null;
+    position.seekAnchor = true;
+  };
+
   while (pages < maxPages) {
     let mediaPage: InstagramPage;
     const requestedAfter = after;
@@ -316,16 +333,9 @@ async function walkFeed(input: {
       mediaPage = await fetchMediaPage(deps, accountId, accessToken, requestedAfter);
     } catch (error) {
       if (requestedAfter && isInvalidCursorError(error) && !rewalked) {
-        console.error(
+        restartFromHead(
           "Instagram continuation cursor was rejected. Restarting this walk from the newest page without marking history complete."
         );
-        rewalked = true;
-        after = undefined;
-        seekAnchor = true;
-        sawAnchor = false;
-        sawHead = true;
-        position.resumeCursor = null;
-        position.seekAnchor = true;
         continue;
       }
       throw error;
@@ -333,16 +343,9 @@ async function walkFeed(input: {
 
     const posts = mediaPage.data ?? [];
     if (requestedAfter && posts.length === 0 && !rewalked) {
-      console.error(
+      restartFromHead(
         "Instagram continuation cursor returned no posts. Restarting from the newest page without marking history complete."
       );
-      rewalked = true;
-      after = undefined;
-      seekAnchor = true;
-      sawAnchor = false;
-      sawHead = true;
-      position.resumeCursor = null;
-      position.seekAnchor = true;
       continue;
     }
     if (
@@ -350,18 +353,11 @@ async function walkFeed(input: {
       !rewalked &&
       continuationLooksRestarted(posts, savedAnchor)
     ) {
-      console.error(
-        "Instagram continuation cursor did not resume older history. Restarting from the newest page without marking history complete."
-      );
       // Discard this body. A missing next link here is not the end of the feed.
       // The following request has no cursor, so only that fresh head can finish the walk.
-      rewalked = true;
-      after = undefined;
-      seekAnchor = true;
-      sawAnchor = false;
-      sawHead = true;
-      position.resumeCursor = null;
-      position.seekAnchor = true;
+      restartFromHead(
+        "Instagram continuation cursor did not resume older history. Restarting from the newest page without marking history complete."
+      );
       continue;
     }
 
@@ -409,6 +405,20 @@ async function walkFeed(input: {
 
     const cursor = mediaPage.paging?.cursors?.after;
     if (!cursor) return { stop: "missing-cursor", sawHead, position };
+    if (requestedAfter && cursor === requestedAfter) {
+      if (!rewalked) {
+        restartFromHead(
+          "Instagram returned the same continuation cursor. Restarting from the newest page without marking history complete."
+        );
+        continue;
+      }
+      position.resumeCursor = null;
+      position.anchorId = null;
+      position.anchorTimestamp = null;
+      position.seekAnchor = false;
+      await deps.saveRecovery(position);
+      return { stop: "repeated-cursor", sawHead, position };
+    }
 
     const last = posts[posts.length - 1];
     position.resumeCursor = cursor;
@@ -602,6 +612,22 @@ async function downloadAndUploadImage(
   return { mediaId, s3Key: buildS3Key(mediaId), url: s3Url };
 }
 
+function storedImageUrl(item: DynamoGalleryItem | undefined): string | null {
+  if (!item || item.mediaType === "CAROUSEL_ALBUM") return null;
+  const url = item.backupUrl.trim();
+  return url ? url : null;
+}
+
+function storedChild(item: DynamoGalleryItem | undefined, childId: string): DynamoGalleryMedia | null {
+  const match = item?.media?.find((asset) => asset.mediaId === childId && asset.url.trim());
+  if (!match) return null;
+  return {
+    mediaId: match.mediaId,
+    s3Key: match.s3Key.trim() || buildS3Key(childId),
+    url: match.url,
+  };
+}
+
 async function processCarouselAlbum(
   media: InstagramMedia,
   accessToken: string,
@@ -612,10 +638,16 @@ async function processCarouselAlbum(
     throw new Error(`Carousel ${media.id} has no child media`);
   }
 
+  const existing = await deps.loadGalleryItem(media.id);
   const mediaAssets: DynamoGalleryMedia[] = [];
   for (const child of children) {
     if (child.media_type !== "IMAGE") {
       console.log(`Skipping ${child.media_type} carousel child: ${child.id} (parent ${media.id})`);
+      continue;
+    }
+    const stored = storedChild(existing, child.id);
+    if (stored) {
+      mediaAssets.push(stored);
       continue;
     }
     if (!child.media_url) {
@@ -670,11 +702,14 @@ async function processInstagramMedia(
     return "skipped";
   }
 
-  if (!media.media_url) {
+  const existingUrl = storedImageUrl(await deps.loadGalleryItem(media.id));
+  if (!existingUrl && !media.media_url) {
     throw new Error(`No media_url found for ${media.id}`);
   }
 
-  const uploaded = await downloadAndUploadImage(media.id, media.media_url, deps);
+  const uploaded = existingUrl
+    ? { mediaId: media.id, s3Key: buildS3Key(media.id), url: existingUrl }
+    : await downloadAndUploadImage(media.id, media.media_url as string, deps);
   const productType = mapToProductType(media.caption);
   await deps.saveGalleryItem({
     photoId: media.id,

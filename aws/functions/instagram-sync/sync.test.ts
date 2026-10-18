@@ -89,6 +89,7 @@ function harness(options: {
   let metricWrites = 0;
   let saveAttempts = 0;
   let mediaUsedRefreshedToken = false;
+  const uploads: string[] = [];
   const recovery = {
     initialised: false,
     position: emptyBackfill(options.backfillUntil ?? DEFAULT_BACKFILL_UNTIL),
@@ -163,7 +164,11 @@ function harness(options: {
     saveGalleryItem: async (item) => {
       store.set(item.photoId, item);
     },
-    uploadPhoto: async (photoId) => `https://bucket.example/${photoId}.jpg`,
+    loadGalleryItem: async (photoId) => store.get(photoId),
+    uploadPhoto: async (photoId) => {
+      uploads.push(photoId);
+      return `https://bucket.example/${photoId}.jpg`;
+    },
     putSuccessMetric: async () => {
       metricWrites += 1;
     },
@@ -178,6 +183,7 @@ function harness(options: {
     store,
     existing,
     metricWrites: () => metricWrites,
+    uploads: () => uploads,
     saveAttempts: () => saveAttempts,
     secret: () => secret,
     mediaUsedRefreshedToken: () => mediaUsedRefreshedToken,
@@ -1139,5 +1145,226 @@ describe("historical continuation and backfill", () => {
     assert.equal(seen.length < historical, true);
     assert.equal(env.store.has("p3"), true);
     assert.equal(env.metricWrites(), 2);
+  });
+
+  it("rewalks when Graph code 100 rejects a cursor without using the error message", async () => {
+    let rejected = false;
+    const env = harness({
+      maxPages: 3,
+      routes: (call) => {
+        if (call.pathname.endsWith("/kept-failure")) {
+          return jsonResponse(500, {
+            error: { message: "still unavailable", type: "GraphMethodException", code: 2, is_transient: true },
+          });
+        }
+        if (call.after === "saved-cursor" && !rejected) {
+          rejected = true;
+          return jsonResponse(400, {
+            error: {
+              message: "Invalid parameter",
+              type: "OAuthException",
+              code: 100,
+              error_subcode: 33,
+              is_transient: false,
+              error_data: { blame_field: "after" },
+            },
+          });
+        }
+        if (!call.after) {
+          return jsonResponse(200, paged([media("head-post", "2026-10-12T00:00:00+0000")], "fresh-cursor"));
+        }
+        assert.equal(call.after, "fresh-cursor");
+        return jsonResponse(200, paged([media("older-history", "2026-09-30T00:00:00+0000")], null));
+      },
+    });
+    env.recovery.initialised = true;
+    env.recovery.position = {
+      ...emptyBackfill(DEFAULT_BACKFILL_UNTIL),
+      pendingHead: "2026-10-12T00:00:00+0000",
+      resumeCursor: "saved-cursor",
+      anchorId: "anchor-post",
+      anchorTimestamp: "2026-10-01T00:00:00+0000",
+    };
+    env.recovery.failures.set("kept-failure", "2026-10-08T00:00:00+0000");
+
+    await assert.rejects(runInstagramSync(env.deps), /kept-failure/);
+    assert.equal(env.store.has("older-history"), true);
+    assert.equal(env.recovery.failures.has("kept-failure"), true);
+    assert.equal(env.metricWrites(), 0);
+    assert.equal(env.calls.some((call) => call.after === "fresh-cursor"), true);
+  });
+
+  it("keeps the saved cursor when a continuation is throttled or transient", async () => {
+    const env = harness({
+      routes: (call) => {
+        if (call.pathname.endsWith("/kept-failure")) {
+          return jsonResponse(500, {
+            error: { message: "still unavailable", type: "GraphMethodException", code: 2 },
+          });
+        }
+        if (call.after === "saved-cursor") {
+          return jsonResponse(400, {
+            error: {
+              message: "Application request limit reached",
+              type: "OAuthException",
+              code: 4,
+              is_transient: true,
+            },
+          });
+        }
+        return jsonResponse(200, paged([media("should-not-import", "2026-10-12T00:00:00+0000")], null));
+      },
+    });
+    env.recovery.initialised = true;
+    env.recovery.position = {
+      ...emptyBackfill(DEFAULT_BACKFILL_UNTIL),
+      resumeCursor: "saved-cursor",
+      anchorId: "anchor-post",
+      anchorTimestamp: "2026-10-01T00:00:00+0000",
+    };
+    env.recovery.failures.set("kept-failure", "2026-10-08T00:00:00+0000");
+
+    await assert.rejects(runInstagramSync(env.deps), /request limit/);
+    assert.equal(env.metricWrites(), 0);
+    assert.equal(env.recovery.position.resumeCursor, "saved-cursor");
+    assert.equal(env.recovery.position.historyCovered, false);
+    assert.equal(env.recovery.position.phase, "backfill");
+    assert.equal(env.recovery.failures.has("kept-failure"), true);
+    assert.equal(env.store.has("should-not-import"), false);
+    assert.equal(
+      env.calls.some((call) => call.pathname.endsWith("/media") && call.after === null),
+      false
+    );
+  });
+
+  it("keeps the saved cursor when Graph code 100 is marked transient", async () => {
+    const env = harness({
+      routes: (call) => {
+        if (call.after === "saved-cursor") {
+          return jsonResponse(400, {
+            error: {
+              message: "Please retry",
+              type: "OAuthException",
+              code: 100,
+              is_transient: true,
+            },
+          });
+        }
+        return jsonResponse(200, { data: [media("should-not-import", "2026-10-12T00:00:00+0000")] });
+      },
+    });
+    env.recovery.initialised = true;
+    env.recovery.position = {
+      ...emptyBackfill(DEFAULT_BACKFILL_UNTIL),
+      resumeCursor: "saved-cursor",
+      anchorId: "anchor-post",
+      anchorTimestamp: "2026-10-01T00:00:00+0000",
+    };
+
+    await assert.rejects(runInstagramSync(env.deps), /Please retry/);
+    assert.equal(env.metricWrites(), 0);
+    assert.equal(env.recovery.position.resumeCursor, "saved-cursor");
+    assert.equal(env.recovery.position.historyCovered, false);
+    assert.equal(env.store.has("should-not-import"), false);
+  });
+
+  it("stops a repeated continuation cursor without marking history complete", async () => {
+    const env = harness({
+      maxPages: 10,
+      routes: (call) => {
+        const posts = [media("head-post", "2026-10-12T00:00:00+0000")];
+        if (!call.after) return jsonResponse(200, paged(posts, "again"));
+        return jsonResponse(200, paged(posts, "again"));
+      },
+    });
+
+    await assert.rejects(runInstagramSync(env.deps), /repeated a paging cursor/);
+    assert.equal(env.metricWrites(), 0);
+    assert.equal(env.recovery.position.historyCovered, false);
+    assert.equal(env.recovery.position.phase, "backfill");
+    assert.equal(env.recovery.position.resumeCursor, null);
+    assert.equal(env.store.has("head-post"), true);
+    assert.equal(env.calls.filter((call) => call.pathname.endsWith("/media")).length < 6, true);
+  });
+
+  it("refreshes stored gallery metadata without uploading the image again", async () => {
+    let likes = 4;
+    const env = harness({
+      routes: () =>
+        jsonResponse(200, {
+          data: [
+            media("existing-post", BOUNDARY, { caption: "#cupcakes", like_count: likes }),
+            media("new-post", BOUNDARY, { like_count: 2 }),
+          ],
+        }),
+    });
+
+    const summary = await runInstagramSync(env.deps);
+    assert.equal(summary.saved, 2);
+    assert.deepEqual(env.uploads(), ["new-post"]);
+    const existing = env.store.get("existing-post");
+    assert.equal(existing?.backupUrl, "https://example.com/existing.jpg");
+    assert.equal(existing?.likes, 4);
+    assert.equal(existing?.productType, "cupcakes");
+    assert.equal(existing?.caption, "#cupcakes");
+    assert.equal(existing?.instagramTimestamp, BOUNDARY);
+
+    likes = 8;
+    await runInstagramSync(env.deps);
+    assert.deepEqual(env.uploads(), ["new-post"]);
+    assert.equal(env.store.get("existing-post")?.likes, 8);
+    assert.equal(env.store.get("new-post")?.backupUrl, "https://bucket.example/new-post.jpg");
+    assert.equal(env.store.size, 2);
+  });
+
+  it("reuses stored carousel images and uploads only a new child", async () => {
+    const env = harness({
+      routes: (call) => {
+        if (call.pathname.endsWith("/album/children")) {
+          return jsonResponse(200, {
+            data: [
+              { id: "child-a", media_type: "IMAGE", media_url: "https://cdn.example/child-a.jpg" },
+              { id: "child-b", media_type: "IMAGE", media_url: "https://cdn.example/child-b.jpg" },
+            ],
+          });
+        }
+        return jsonResponse(200, {
+          data: [
+            {
+              id: "album",
+              media_type: "CAROUSEL_ALBUM",
+              permalink: "https://www.instagram.com/p/album/",
+              timestamp: "2026-10-03T00:00:00+0000",
+              caption: "#weddingcake",
+              like_count: 2,
+            },
+          ],
+        });
+      },
+    });
+    env.store.set("album", {
+      ...env.existing,
+      photoId: "album",
+      mediaType: "CAROUSEL_ALBUM",
+      backupUrl: "https://bucket.example/child-a.jpg",
+      instagramTimestamp: "2026-10-03T00:00:00+0000",
+      media: [
+        { mediaId: "child-a", s3Key: "instagram/2026/child-a.jpg", url: "https://bucket.example/child-a.jpg" },
+      ],
+    });
+
+    const summary = await runInstagramSync(env.deps);
+    assert.equal(summary.saved, 1);
+    assert.deepEqual(env.uploads(), ["child-b"]);
+    const album = env.store.get("album");
+    assert.equal(album?.backupUrl, "https://bucket.example/child-a.jpg");
+    assert.equal(album?.likes, 2);
+    assert.equal(album?.instagramTimestamp, "2026-10-03T00:00:00+0000");
+    assert.deepEqual(
+      album?.media?.map((asset) => asset.mediaId),
+      ["child-a", "child-b"]
+    );
+    assert.equal(album?.media?.[0]?.url, "https://bucket.example/child-a.jpg");
+    assert.equal(album?.media?.[1]?.url, "https://bucket.example/child-b.jpg");
   });
 });
