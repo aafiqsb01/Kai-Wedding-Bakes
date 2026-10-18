@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { docClient, GALLERY_TABLE } from "../../src/lib/dynamodb";
 import { getGalleryCakes } from "../../src/lib/gallery";
+import { getGallerySections } from "../../src/lib/gallery-helpers";
+import type { Cake } from "../../src/types";
 
 type ScanInput = {
   TableName?: string;
@@ -197,5 +199,96 @@ describe("getGalleryCakes", () => {
     } finally {
       console.error = originalError;
     }
+  });
+});
+
+function cake(
+  id: string,
+  productType: string,
+  instagramTimestamp: string
+): Cake {
+  return {
+    id,
+    title: productType,
+    category: "wedding cake",
+    imageUrl: `https://example.com/${id}.jpg`,
+    description: "",
+    tags: [],
+    productType,
+    instagramTimestamp,
+  };
+}
+
+describe("getGallerySections product type order", () => {
+  it("orders product types by item count descending, using the full count", () => {
+    const cakes = [
+      cake("c1", "cupcakes", "2024-01-01T00:00:00.000Z"),
+      cake("w1", "wedding-cake", "2020-01-01T00:00:00.000Z"),
+      cake("w2", "wedding-cake", "2020-01-02T00:00:00.000Z"),
+      cake("w3", "wedding-cake", "2020-01-03T00:00:00.000Z"),
+      cake("b1", "birthday-cake", "2026-06-01T00:00:00.000Z"),
+      cake("c2", "cupcakes", "2024-02-01T00:00:00.000Z"),
+    ];
+
+    const sections = getGallerySections(cakes, 2);
+
+    assert.deepEqual(
+      sections.map((section) => section.productType),
+      ["wedding-cake", "cupcakes", "birthday-cake"]
+    );
+    assert.deepEqual(
+      sections.map((section) => section.items.map((item) => item.id)),
+      [
+        ["w3", "w2"],
+        ["c2", "c1"],
+        ["b1"],
+      ]
+    );
+  });
+
+  it("keeps the previous order when two product types have the same count", () => {
+    const cakes = [
+      cake("a1", "anniversary-cake", "2024-01-01T00:00:00.000Z"),
+      cake("e1", "engagement-cake", "2025-01-01T00:00:00.000Z"),
+      cake("a2", "anniversary-cake", "2023-01-01T00:00:00.000Z"),
+      cake("e2", "engagement-cake", "2022-01-01T00:00:00.000Z"),
+    ];
+
+    const sections = getGallerySections(cakes);
+
+    assert.deepEqual(
+      sections.map((section) => section.productType),
+      ["engagement-cake", "anniversary-cake"]
+    );
+  });
+
+  it("keeps first-seen order when counts and latest timestamps match", () => {
+    const sameTime = "2024-05-01T00:00:00.000Z";
+    const cakes = [
+      cake("n1", "nikah-cake", sameTime),
+      cake("b1", "birthday-cake", sameTime),
+    ];
+
+    const sections = getGallerySections(cakes);
+
+    assert.deepEqual(
+      sections.map((section) => section.productType),
+      ["nikah-cake", "birthday-cake"]
+    );
+  });
+
+  it("omits product types that have no gallery items", () => {
+    const sections = getGallerySections([
+      cake("w1", "wedding-cake", "2024-01-01T00:00:00.000Z"),
+    ]);
+
+    assert.deepEqual(
+      sections.map((section) => section.productType),
+      ["wedding-cake"]
+    );
+    assert.equal(
+      sections.some((section) => section.items.length === 0),
+      false
+    );
   });
 });
