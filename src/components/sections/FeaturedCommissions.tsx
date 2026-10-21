@@ -31,7 +31,7 @@ export function FeaturedCommissions({ cakes }: FeaturedCommissionsProps) {
         <div className="flex gap-5 overflow-x-auto pb-4 pt-6 [-ms-overflow-style:none] [scrollbar-width:none] snap-x snap-mandatory touch-pan-x lg:hidden [&::-webkit-scrollbar]:hidden">
           {cakes.map((cake, index) => (
             <FeaturedItem
-              key={cake.id}
+              key={`${cake.id}-${cake.productType ?? "other"}`}
               cake={cake}
               offset={index % 2 === 0 ? "down" : "up"}
               className="w-44 shrink-0 snap-start sm:w-48"
@@ -50,7 +50,7 @@ export function FeaturedCommissions({ cakes }: FeaturedCommissionsProps) {
         >
           {cakes.map((cake, index) => (
             <FeaturedItem
-              key={cake.id}
+              key={`${cake.id}-${cake.productType ?? "other"}`}
               cake={cake}
               offset={index % 2 === 0 ? "down" : "up"}
               className={

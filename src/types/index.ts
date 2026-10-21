@@ -3,11 +3,13 @@ export interface Cake {
   title: string;
   category:
     | "wedding cake"
+    | "celebratory cakes"
     | "nikkah cake"
     | "engagement cake"
     | "cupcakes"
     | "birthday cake"
-    | "anniversary cake";
+    | "anniversary cake"
+    | "other fun bakes";
   /** Cover / primary image (first carousel slide, or the only image). */
   imageUrl: string;
   /**
@@ -20,8 +22,10 @@ export interface Cake {
   tags: string[];
   flavor?: string;
   servings?: number;
-  /** Raw DynamoDB productType, e.g. "wedding-cake" */
+  /** Raw DynamoDB productType, e.g. "wedding-cake". Primary type for older readers. */
   productType?: string;
+  /** Every category this post belongs to. Older rows omit this and use productType. */
+  productTypes?: string[];
   likes?: number;
   syncedAt?: string;
   /** Original Instagram media timestamp (ISO). Prefer over syncedAt for ordering. */

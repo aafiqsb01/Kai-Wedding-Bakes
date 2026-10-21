@@ -12,7 +12,12 @@ import {
   watermarkRecord,
 } from "../../../aws/functions/instagram-sync/recovery-state";
 import {
+  classificationForGalleryItem,
   mapToProductType,
+  mapToProductTypes,
+  productTypeForHashtag,
+  recognisedProductType,
+  recognisedProductTypes,
   runInstagramSync,
   type GraphResponse,
   type SyncDependencies,
@@ -208,40 +213,321 @@ const revokedBody = {
 };
 
 describe("product types", () => {
-  it("keeps the existing hashtag rules", () => {
-    assert.equal(mapToProductType("#weddingcake"), "wedding-cake");
+  it("classifies hashtags that contain both wedding and cake as wedding cakes", () => {
+    for (const tag of [
+      "#weddingcake",
+      "#wedding-cake",
+      "#weddingcakes",
+      "#wedding-cakes",
+      "#elegantweddingcake",
+      "#royalweddingcake",
+      "#weddingcakedesigner",
+      "#opulenceweddingcakes",
+      "#luxuryweddingcake",
+      "#floralweddingcake",
+      "#luxury-wedding-cake",
+    ]) {
+      assert.equal(mapToProductType(tag), "wedding-cake", tag);
+      assert.equal(productTypeForHashtag(tag), "wedding-cake", tag);
+      assert.equal(productTypeForHashtag(tag.slice(1)), "wedding-cake", tag);
+    }
+
     assert.equal(mapToProductType("#WeddingCake extra"), "wedding-cake");
-    assert.equal(mapToProductType("#cupcakes #weddingcake"), "cupcakes");
-    assert.equal(mapToProductType("engagement party #engagement"), "engagement-cake");
-    assert.equal(mapToProductType("our engagements"), "wedding-cake");
-    assert.equal(mapToProductType("#nikah-cake"), "nikah-cake");
-    assert.equal(mapToProductType("#nikkah-cake"), "nikah-cake");
-    assert.equal(mapToProductType("#nikahcake"), "nikah-cake");
-    assert.equal(mapToProductType("#nikkahcake"), "nikah-cake");
-    assert.equal(mapToProductType("#engagementcake"), "engagement-cake");
-    assert.equal(mapToProductType(undefined), "wedding-cake");
+    assert.equal(mapToProductType("#Wedding-Cake"), "wedding-cake");
+    assert.equal(mapToProductType("#ELEGANTWEDDINGCAKE"), "wedding-cake");
+    assert.equal(mapToProductType("Show piece #LuxuryWeddingCake."), "wedding-cake");
+    assert.equal(productTypeForHashtag("OpulenceWeddingCakes"), "wedding-cake");
+    assert.equal(productTypeForHashtag("#wedding_cake"), "wedding-cake");
+    assert.equal(productTypeForHashtag("#wedding-day-cake"), "wedding-cake");
+    assert.equal(productTypeForHashtag("#weddingexhibition"), null);
+    assert.equal(productTypeForHashtag("#weddingshow"), null);
+    assert.equal(productTypeForHashtag("#weddingday"), null);
+    assert.deepEqual(mapToProductTypes("#weddingexhibition #weddingshow"), []);
+    assert.equal(mapToProductType("#cupcake"), "cupcakes");
+    assert.equal(mapToProductType("#cupcakes"), "cupcakes");
+    assert.equal(mapToProductType("#CUPCAKES"), "cupcakes");
+    assert.equal(productTypeForHashtag("cupcake"), "cupcakes");
+    assert.equal(productTypeForHashtag("#cupcakes"), "cupcakes");
   });
 
-  it("recognises birthday and anniversary hashtags without changing the fallback", () => {
-    assert.equal(mapToProductType("#birthdaycake"), "birthday-cake");
-    assert.equal(mapToProductType("#BirthdayCake"), "birthday-cake");
-    assert.equal(mapToProductType("#birthday-cake"), "birthday-cake");
-    assert.equal(mapToProductType("#Birthday-Cake"), "birthday-cake");
-    assert.equal(mapToProductType("#anniversarycake"), "anniversary-cake");
-    assert.equal(mapToProductType("#ANNIVERSARYCAKE"), "anniversary-cake");
-    assert.equal(mapToProductType("#anniversary-cake"), "anniversary-cake");
-    assert.equal(mapToProductType("#Anniversary-Cake"), "anniversary-cake");
+  it("classifies hashtags containing cupcake as cupcakes, after wedding cake", () => {
+    for (const tag of [
+      "#cupcake",
+      "#cupcakes",
+      "#CUPCAKE",
+      "#celebrationcupcakes",
+      "#cupcakebundle",
+      "#flavouredcupcakes",
+      "#themedcupcakes",
+      "#VanillaCupcakes",
+      "#birthdaycupcakes",
+    ]) {
+      assert.equal(productTypeForHashtag(tag), "cupcakes", tag);
+      assert.equal(productTypeForHashtag(tag.slice(1)), "cupcakes", tag);
+      assert.equal(mapToProductType(tag), "cupcakes", tag);
+    }
 
+    assert.equal(productTypeForHashtag("#cup-cake"), "cupcakes");
+    assert.equal(productTypeForHashtag("#cup-cakes"), "cupcakes");
+    assert.equal(productTypeForHashtag("#wedding-cupcakes"), "cupcakes");
+    assert.equal(productTypeForHashtag("#weddingcupcakes"), "cupcakes");
+    assert.equal(productTypeForHashtag("#weddingcakecupcakes"), "wedding-cake");
+    assert.equal(mapToProductType("#weddingcakecupcakes"), "wedding-cake");
+    assert.equal(productTypeForHashtag("#birthdaycupcakes"), "cupcakes");
+    assert.equal(productTypeForHashtag("#sweetcelebrationsweddingcakes"), "wedding-cake");
+    assert.deepEqual(recognisedProductTypes("#celebrationcupcakes #cupcakes"), ["cupcakes"]);
+    assert.deepEqual(recognisedProductTypes("#VanillaCupcakes #birthdaycake"), [
+      "cupcakes",
+      "celebratory-cakes",
+    ]);
+    assert.deepEqual(recognisedProductTypes("#weddingcupcakes #flavouredcupcakes"), ["cupcakes"]);
+    assert.deepEqual(recognisedProductTypes("#weddingcake #flavouredcupcakes"), [
+      "wedding-cake",
+      "cupcakes",
+    ]);
+    assert.equal(productTypeForHashtag("#cakemaker"), null);
+    assert.equal(productTypeForHashtag("#bluecake"), null);
+    assert.deepEqual(
+      recognisedProductTypes("#birthdaycupcakes #cupcakes #cakemaker #bluecake"),
+      ["cupcakes"]
+    );
+    assert.equal(mapToProductType("#themedcupcakes #cakemaker"), "cupcakes");
+    assert.deepEqual(mapToProductTypes("#themedcupcakes #cakemaker"), ["cupcakes"]);
+    assert.deepEqual(mapToProductTypes("#cupcakes #cakemaker"), ["cupcakes"]);
+    assert.deepEqual(mapToProductTypes("#weddingcake #cakes"), ["wedding-cake"]);
+  });
+
+  it("maps recognised occasion hashtags to celebratory cakes", () => {
+    for (const tag of [
+      "#birthdaycake",
+      "#birthday-cake",
+      "#nikahcake",
+      "#nikkahcake",
+      "#nikah-cake",
+      "#nikkah-cake",
+      "#engagementcake",
+      "#engagement",
+      "#anniversarycake",
+      "#anniversary-cake",
+      "#christeningcake",
+      "#birthday_cake",
+      "#UmrahMubarak",
+      "#umrah-cake",
+      "#umrahcake",
+      "#birthday-cakes",
+      "#anniversarycakes",
+      "#birthday",
+      "#anniversary",
+    ]) {
+      assert.equal(mapToProductType(tag), "celebratory-cakes", tag);
+      assert.equal(productTypeForHashtag(tag), "celebratory-cakes", tag);
+      assert.equal(productTypeForHashtag(tag.slice(1)), "celebratory-cakes", tag);
+    }
+
+    assert.equal(mapToProductType("#BirthdayCake"), "celebratory-cakes");
+    assert.equal(mapToProductType("#Birthday-Cake"), "celebratory-cakes");
+    assert.equal(mapToProductType("#ANNIVERSARYCAKE"), "celebratory-cakes");
+    assert.equal(mapToProductType("#Anniversary-Cake"), "celebratory-cakes");
+    assert.equal(mapToProductType("engagement party #engagement"), "celebratory-cakes");
+    assert.equal(
+      mapToProductType("#UmrahMubarak #CustomCakes #MadeWithLove #cakes"),
+      "celebratory-cakes"
+    );
+    assert.deepEqual(
+      recognisedProductTypes(
+        "🕋🤍 Umrah cake! A sweet celebration for a blessed journey. ✨🎂\n\n#UmrahMubarak #CustomCakes #MadeWithLove #cakes"
+      ),
+      ["celebratory-cakes"]
+    );
+    assert.equal(productTypeForHashtag("#CustomCakes"), null);
+    assert.equal(productTypeForHashtag("#cakes"), null);
+  });
+
+  it("recognises occasion and cake compounds, and rejects occasion words on their own", () => {
+    for (const tag of [
+      "#umrah-cake",
+      "#umrahcake",
+      "#umrah_cake",
+      "#birthday-cakes",
+      "#birthday_cakes",
+      "#anniversarycake",
+      "#anniversary-cakes",
+      "#UmrahMubarak",
+      "#umrah-mubarak",
+    ]) {
+      assert.equal(productTypeForHashtag(tag), "celebratory-cakes", tag);
+      assert.equal(productTypeForHashtag(tag.slice(1)), "celebratory-cakes", tag);
+      assert.deepEqual(mapToProductTypes(tag), ["celebratory-cakes"], tag);
+      assert.equal(mapToProductType(tag), "celebratory-cakes", tag);
+    }
+
+    assert.equal(productTypeForHashtag("#birthdayparty"), null);
+    assert.equal(productTypeForHashtag("#birthday_party"), null);
+    assert.equal(productTypeForHashtag("#Birthday-Party"), null);
+    assert.equal(mapToProductType("#birthdayparty"), null);
+    assert.deepEqual(mapToProductTypes("#birthdayparty"), []);
+    assert.deepEqual(classificationForGalleryItem("#birthdayparty"), {});
+    assert.deepEqual(mapToProductTypes("#birthdayparty #custom-cakes"), ["other-fun-bakes"]);
+    assert.deepEqual(recognisedProductTypes("#birthdayparty #wedding-cake"), ["wedding-cake"]);
+
+    assert.equal(productTypeForHashtag("#weddingexhibition"), null);
+    assert.equal(productTypeForHashtag("#weddingshow"), null);
+    assert.deepEqual(mapToProductTypes("#weddingexhibition"), []);
+    assert.deepEqual(mapToProductTypes("#weddingshow"), []);
+    assert.deepEqual(mapToProductTypes("#weddingexhibition #weddingshow"), []);
+    assert.equal(mapToProductType("#weddingexhibition"), null);
+
+    assert.equal(productTypeForHashtag("#birthdaycupcakes"), "cupcakes");
+    assert.equal(productTypeForHashtag("#weddingcupcakes"), "cupcakes");
+    assert.deepEqual(mapToProductTypes("#birthdaycupcakes"), ["cupcakes"]);
+    assert.deepEqual(mapToProductTypes("#weddingcupcakes"), ["cupcakes"]);
+    assert.deepEqual(recognisedProductTypes("#birthdaycupcakes #anniversarycake"), [
+      "cupcakes",
+      "celebratory-cakes",
+    ]);
+
+    assert.equal(productTypeForHashtag("#wedding-cake"), "wedding-cake");
+    assert.equal(productTypeForHashtag("#wedding_cakes"), "wedding-cake");
+    assert.deepEqual(mapToProductTypes("#wedding-cake"), ["wedding-cake"]);
+    assert.equal(productTypeForHashtag("#cup-cakes"), "cupcakes");
+    assert.equal(productTypeForHashtag("#cup_cakes"), "cupcakes");
+
+    assert.equal(productTypeForHashtag("#custom-cakes"), null);
+    assert.deepEqual(mapToProductTypes("#custom-cakes"), ["other-fun-bakes"]);
+    assert.equal(mapToProductType("#custom-cakes"), "other-fun-bakes");
+    assert.deepEqual(mapToProductTypes("#custom-cakes #umrah-cake"), ["celebratory-cakes"]);
+
+    assert.deepEqual(recognisedProductTypes("#wedding-cake #umrah-cake"), [
+      "wedding-cake",
+      "celebratory-cakes",
+    ]);
+    assert.equal(mapToProductType("#wedding-cake #anniversarycake"), "wedding-cake");
+    assert.deepEqual(mapToProductTypes("#wedding-cake #anniversarycake"), [
+      "wedding-cake",
+      "celebratory-cakes",
+    ]);
+    assert.deepEqual(classificationForGalleryItem("#macarons"), {});
+    assert.equal(mapToProductType("#birthdayparty #weddingshow"), null);
+  });
+
+  it("keeps a wedding cake with a generic celebration tag out of celebratory cakes", () => {
+    assert.equal(productTypeForHashtag("#celebrationcake"), null);
+    assert.equal(productTypeForHashtag("#celebration-cake"), null);
+    assert.equal(productTypeForHashtag("#celebration_cakes"), null);
+    assert.equal(productTypeForHashtag("#CelebrationCake"), null);
+    assert.equal(productTypeForHashtag("#celebration"), null);
+    assert.deepEqual(mapToProductTypes("#celebrationcake"), ["other-fun-bakes"]);
+    assert.deepEqual(
+      recognisedProductTypes("#WeddingCake #wedding #whiterose #celebrationcake"),
+      ["wedding-cake"]
+    );
+    assert.equal(
+      mapToProductType("#WeddingCake #wedding #whiterose #celebrationcake"),
+      "wedding-cake"
+    );
+    assert.deepEqual(
+      mapToProductTypes("#WeddingCake #wedding #whiterose #celebrationcake"),
+      ["wedding-cake"]
+    );
+    assert.deepEqual(recognisedProductTypes("#WeddingCake #birthdaycake #celebrationcake"), [
+      "wedding-cake",
+      "celebratory-cakes",
+    ]);
+    assert.deepEqual(recognisedProductTypes("#celebrationcupcakes"), ["cupcakes"]);
+    assert.equal(productTypeForHashtag("#sweetcelebrationsweddingcakes"), "wedding-cake");
+    assert.deepEqual(recognisedProductTypes("#sweetcelebrationsweddingcakes #cupcakes"), [
+      "wedding-cake",
+      "cupcakes",
+    ]);
+  });
+
+  it("uses other fun bakes only when no specific category matches", () => {
+    for (const tag of [
+      "#cakes",
+      "#cakemaker",
+      "#customcakes",
+      "#bluecake",
+      "#LemonCake",
+      "#CakeDesigner",
+      "#CakeDesign",
+      "#ThreeTierCake",
+      "#ChocolateCake",
+      "#FloralCake",
+      "#VintageCake",
+      "#cake",
+    ]) {
+      assert.equal(productTypeForHashtag(tag), null, tag);
+      assert.deepEqual(mapToProductTypes(tag), ["other-fun-bakes"], tag);
+      assert.equal(mapToProductType(tag), "other-fun-bakes", tag);
+    }
+
+    assert.deepEqual(mapToProductTypes("#cakes #cakemaker"), ["other-fun-bakes"]);
+    assert.deepEqual(mapToProductTypes("#birthdaycake #customcakes"), ["celebratory-cakes"]);
+    assert.deepEqual(mapToProductTypes("#Custom-Cake"), ["other-fun-bakes"]);
+    assert.deepEqual(recognisedProductTypes("#weddingcake #birthdaycake"), [
+      "wedding-cake",
+      "celebratory-cakes",
+    ]);
+  });
+
+  it("collects every matching product type instead of stopping at the first", () => {
+    assert.deepEqual(recognisedProductTypes("#weddingcakeideas #cupcakes"), ["wedding-cake", "cupcakes"]);
+    assert.deepEqual(recognisedProductTypes("#CUPCAKES #Luxury-Wedding-Cake"), ["wedding-cake", "cupcakes"]);
+    assert.deepEqual(recognisedProductTypes("#weddingcake #birthdaycake"), ["wedding-cake", "celebratory-cakes"]);
+    assert.deepEqual(recognisedProductTypes("#birthdaycake #wedding-cake"), ["wedding-cake", "celebratory-cakes"]);
+    assert.deepEqual(recognisedProductTypes("#customcake #cupcakes"), ["cupcakes"]);
+    assert.deepEqual(recognisedProductTypes("#anniversarycake #cupcakes"), ["cupcakes", "celebratory-cakes"]);
+    assert.deepEqual(recognisedProductTypes("#cupcakes #nikahcake"), ["cupcakes", "celebratory-cakes"]);
+    assert.deepEqual(
+      recognisedProductTypes("#weddingcake #cupcakes #birthdaycake"),
+      ["wedding-cake", "cupcakes", "celebratory-cakes"]
+    );
+    assert.deepEqual(
+      recognisedProductTypes("#cupcakes #Cupcakes #cupcake #cupcakes"),
+      ["cupcakes"]
+    );
+    assert.deepEqual(recognisedProductTypes("#Birthday-Cake #engagement"), ["celebratory-cakes"]);
+    assert.deepEqual(recognisedProductTypes("#nikah-cake #anniversary-cake"), ["celebratory-cakes"]);
+    assert.deepEqual(mapToProductTypes("#weddingcake #birthdaycake"), ["wedding-cake", "celebratory-cakes"]);
     assert.equal(mapToProductType("#weddingcake #birthdaycake"), "wedding-cake");
-    assert.equal(mapToProductType("#anniversarycake #cupcakes"), "anniversary-cake");
-    assert.equal(mapToProductType("#Birthday-Cake #engagement"), "birthday-cake");
-    assert.equal(mapToProductType("#nikah-cake #anniversary-cake"), "nikah-cake");
+    assert.equal(mapToProductType("#customcake #cupcakes"), "cupcakes");
+    assert.equal(mapToProductType("#cupcakes #weddingcake"), "wedding-cake");
+    assert.deepEqual(mapToProductTypes(undefined), []);
+    assert.deepEqual(recognisedProductTypes("#engagement #cupcakes #weddingcakes"), [
+      "wedding-cake",
+      "cupcakes",
+      "celebratory-cakes",
+    ]);
+  });
 
-    assert.equal(mapToProductType("#birthday"), "wedding-cake");
-    assert.equal(mapToProductType("#anniversary"), "wedding-cake");
-    assert.equal(mapToProductType("birthday cake and anniversary cake"), "wedding-cake");
-    assert.equal(mapToProductType(""), "wedding-cake");
-    assert.equal(mapToProductType(undefined), "wedding-cake");
+  it("does not classify prose, and leaves a hashtag-free caption unclassifiable", () => {
+    assert.equal(recognisedProductType("birthday cake and anniversary cake"), null);
+    assert.equal(recognisedProductType("our engagements"), null);
+    assert.equal(recognisedProductType("a custom cake for the weekend"), null);
+    assert.equal(recognisedProductType("an elegant wedding cake for Saturday"), null);
+    assert.equal(recognisedProductType("#weddingday #weddingshow"), null);
+    assert.equal(recognisedProductType("#weddingexhibition"), null);
+    assert.equal(recognisedProductType("#macarons"), null);
+    assert.equal(recognisedProductType("#flowers #dessert"), null);
+    assert.equal(recognisedProductType("cake"), null);
+    assert.equal(mapToProductType("birthday cake and anniversary cake"), null);
+    assert.equal(mapToProductType("an elegant wedding cake for Saturday"), null);
+    assert.equal(mapToProductType("our engagements"), null);
+    assert.equal(mapToProductType("#macarons"), null);
+    assert.equal(mapToProductType(""), null);
+    assert.equal(mapToProductType(undefined), null);
+    assert.deepEqual(mapToProductTypes("#weddingday #weddingshow"), []);
+    assert.equal(mapToProductType("#birthday"), "celebratory-cakes");
+    assert.equal(mapToProductType("#anniversary"), "celebratory-cakes");
+    assert.deepEqual(classificationForGalleryItem("#macarons"), {});
+    assert.deepEqual(
+      classificationForGalleryItem("#macarons", { productType: "wedding-cake" }),
+      { productType: "wedding-cake" }
+    );
+    assert.deepEqual(classificationForGalleryItem("#cakes"), {
+      productType: "other-fun-bakes",
+      productTypes: ["other-fun-bakes"],
+    });
   });
 
   it("stores birthday and anniversary carousels as one gallery item", async () => {
@@ -273,7 +559,8 @@ describe("product types", () => {
     const birthday = await syncCarousel("birthday-album", "#birthdaycake");
     assert.equal(birthday.summary.saved, 1);
     const birthdayItem = birthday.env.store.get("birthday-album");
-    assert.equal(birthdayItem?.productType, "birthday-cake");
+    assert.equal(birthdayItem?.productType, "celebratory-cakes");
+    assert.deepEqual(birthdayItem?.productTypes, ["celebratory-cakes"]);
     assert.equal(birthdayItem?.mediaType, "CAROUSEL_ALBUM");
     assert.deepEqual(
       birthdayItem?.media?.map((asset) => asset.mediaId),
@@ -284,7 +571,8 @@ describe("product types", () => {
     const anniversary = await syncCarousel("anniversary-album", "#AnniversaryCake");
     assert.equal(anniversary.summary.saved, 1);
     const anniversaryItem = anniversary.env.store.get("anniversary-album");
-    assert.equal(anniversaryItem?.productType, "anniversary-cake");
+    assert.equal(anniversaryItem?.productType, "celebratory-cakes");
+    assert.deepEqual(anniversaryItem?.productTypes, ["celebratory-cakes"]);
     assert.equal(anniversaryItem?.mediaType, "CAROUSEL_ALBUM");
     assert.deepEqual(
       anniversaryItem?.media?.map((asset) => asset.mediaId),
@@ -647,7 +935,7 @@ describe("pagination and imports", () => {
     assert.equal(summary.skipped, 1);
     assert.equal(summary.saved, 1);
     assert.equal(env.store.has("clip"), false);
-    assert.equal(env.store.get("photo")?.productType, "engagement-cake");
+    assert.equal(env.store.get("photo")?.productType, "celebratory-cakes");
     assert.equal(env.metricWrites(), 1);
   });
 

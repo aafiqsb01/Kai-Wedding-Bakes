@@ -7,8 +7,10 @@ const CLOUDFRONT_BASE = "https://d2zp5rpt2x30su.cloudfront.net";
 
 type DynamoProductType =
   | "wedding-cake"
-  | "nikah-cake"
+  | "celebratory-cakes"
   | "cupcakes"
+  | "other-fun-bakes"
+  | "nikah-cake"
   | "engagement-cake"
   | "birthday-cake"
   | "anniversary-cake";
@@ -26,6 +28,8 @@ interface DynamoGalleryItem {
   caption?: string;
   /** Canonical productType; string allows legacy Dynamo values. */
   productType?: DynamoProductType | string;
+  /** Full membership. Older rows omit this and keep productType only. */
+  productTypes?: unknown;
   likes?: number | null;
   syncedAt?: string;
   instagramTimestamp?: string;
@@ -37,10 +41,14 @@ function mapProductTypeToCategory(
   productType: string | undefined
 ): Cake["category"] {
   switch (productType) {
+    case "celebratory-cakes":
+      return "celebratory cakes";
     case "nikah-cake":
       return "nikkah cake";
     case "cupcakes":
       return "cupcakes";
+    case "other-fun-bakes":
+      return "other fun bakes";
     case "engagement-cake":
       return "engagement cake";
     case "birthday-cake":
@@ -120,8 +128,23 @@ function resolveMediaUrls(media: DynamoGalleryMedia[]): string[] {
   return urls;
 }
 
+function readProductTypes(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const seen = new Set<string>();
+  const types: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") continue;
+    const normalised = entry.trim().toLowerCase();
+    if (!normalised || seen.has(normalised)) continue;
+    seen.add(normalised);
+    types.push(normalised);
+  }
+  return types.length > 0 ? types : undefined;
+}
+
 function mapGalleryItemToCake(item: DynamoGalleryItem): Cake {
-  const productType = item.productType?.trim() || undefined;
+  const productTypes = readProductTypes(item.productTypes);
+  const productType = item.productType?.trim() || productTypes?.[0];
   const coverUrl = resolveImageUrl(item);
 
   const mediaUrls =
@@ -150,6 +173,7 @@ function mapGalleryItemToCake(item: DynamoGalleryItem): Cake {
     instagramUrl: item.instagramUrl,
     tags: [],
     productType,
+    productTypes,
     likes: typeof item.likes === "number" && !Number.isNaN(item.likes)
       ? item.likes
       : 0,
