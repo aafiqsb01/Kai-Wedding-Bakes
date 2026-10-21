@@ -45,14 +45,12 @@ export interface DynamoGalleryMedia {
   url: string; // S3 object URL
 }
 
-/** Canonical gallery product categories written by Instagram sync. */
-export type ProductType =
-  | "wedding-cake"
-  | "nikah-cake"
-  | "cupcakes"
-  | "engagement-cake"
-  | "birthday-cake"
-  | "anniversary-cake";
+/**
+ * Canonical gallery product categories written by Instagram sync.
+ * Older rows may still store nikah, engagement, birthday, or anniversary
+ * types until reclassify-gallery-product-types is applied.
+ */
+export type ProductType = "wedding-cake" | "cupcakes" | "celebratory-cakes" | "other-fun-bakes";
 
 /**
  * Gallery item record in DynamoDB
@@ -67,7 +65,20 @@ export interface DynamoGalleryItem {
     instagramUrl: string;               // Original Instagram URL
     backupUrl: string;                  // S3 backup URL (cover / first image)
     caption: string;
-    productType: ProductType;
+    /**
+     * Primary type. Kept for readers that still expect one value.
+     * Omitted when a new post has no classifiable hashtag. Those posts are
+     * not given wedding-cake. Reclassification leaves an existing row unchanged
+     * when its caption is unclassifiable.
+     */
+    productType?: ProductType;
+    /**
+     * Every product type this post belongs to, in canonical order:
+     * wedding-cake, cupcakes, celebratory-cakes, other-fun-bakes.
+     * other-fun-bakes is stored alone, never beside a specific category.
+     * Absent on older rows, which still classify from productType alone.
+     */
+    productTypes?: ProductType[];
     likes: number;                      // ✅ NEEDED for "most liked" filter
     syncedAt: string;                   // ISO timestamp of last Lambda sync
     /** Original Instagram media timestamp (ISO). Used for gallery ordering. */

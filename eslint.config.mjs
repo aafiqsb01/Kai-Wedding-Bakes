@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Generated artifacts already listed in .gitignore:
+    ".aws-sam/**",
+    "dist-test/**",
+    "aws/dist-test/**",
   ]),
 ]);
 

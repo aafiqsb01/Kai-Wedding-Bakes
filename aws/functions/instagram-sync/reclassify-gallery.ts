@@ -1,7 +1,7 @@
 import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
 import { ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import type { ProductType } from "../../config/database";
-import { recognisedProductType } from "./sync";
+import { recognisedProductTypes } from "./sync";
 
 /**
  * One-off gallery product-type reclassification.
@@ -17,9 +17,14 @@ import { recognisedProductType } from "./sync";
  * Dry-run resolves the caller with STS, prints the account, region and table,
  * then scans. It does not update DynamoDB.
  *
- * Apply does the same, then updates productType only when the caption contains
+ * Apply does the same, then updates membership only when the caption contains
  * a recognised product-type hashtag and the confirmed account, region and table
- * match. No account ID is built in. The operator must pass the expected value.
+ * match. A post can belong to several specific types. Other Fun Bakes is used
+ * only when no specific category matches and a hashtag contains "cake" or "bake".
+ * Dry-run lists every category that would be added or removed. productTypes
+ * stores the full set. productType remains the first of that set for older
+ * readers. Captions with no classifiable hashtag are left unchanged.
+ * No account ID is built in. The operator must pass the expected value.
  */
 
 const USAGE = [
@@ -36,6 +41,7 @@ export type StoredGalleryProduct = {
   photoId?: string;
   caption?: string;
   productType?: string;
+  productTypes?: unknown;
 };
 
 export type GalleryScanPage = {
@@ -46,6 +52,7 @@ export type GalleryScanPage = {
 export type ProductTypeUpdate = {
   photoId: string;
   productType: ProductType;
+  productTypes: ProductType[];
 };
 
 export type ResolvedTarget = {
@@ -76,7 +83,12 @@ export type ReclassifyGallerySummary = {
   planned: number;
   updated: number;
   failures: RowFailure[];
-  changes: Array<{ photoId: string; from: string | undefined; to: ProductType }>;
+  changes: Array<{
+    photoId: string;
+    added: string[];
+    removed: string[];
+    productTypes: ProductType[];
+  }>;
   scanIncomplete: boolean;
   scanFailure?: { stage: "scan"; errorName: string; message: string };
 };
@@ -107,21 +119,49 @@ const CONFIRMATION_FLAGS = ["--expected-account", "--expected-region", "--expect
 export function buildProductTypeUpdate(
   tableName: string,
   photoId: string,
-  productType: ProductType
+  productType: ProductType,
+  productTypes: ProductType[]
 ): {
   TableName: string;
   Key: { photoId: string };
   UpdateExpression: string;
-  ExpressionAttributeValues: { ":productType": ProductType };
+  ExpressionAttributeValues: { ":productType": ProductType; ":productTypes": ProductType[] };
   ConditionExpression: string;
 } {
   return {
     TableName: tableName,
     Key: { photoId },
-    UpdateExpression: "SET productType = :productType",
-    ExpressionAttributeValues: { ":productType": productType },
+    UpdateExpression: "SET productType = :productType, productTypes = :productTypes",
+    ExpressionAttributeValues: { ":productType": productType, ":productTypes": productTypes },
     ConditionExpression: "attribute_exists(photoId)",
   };
+}
+
+/** Current categories on a row. productTypes wins when it is present. */
+export function storedMembership(item: StoredGalleryProduct): string[] {
+  if (Array.isArray(item.productTypes)) {
+    const values: string[] = [];
+    const seen = new Set<string>();
+    for (const value of item.productTypes) {
+      if (typeof value !== "string") continue;
+      const normalised = value.trim().toLowerCase();
+      if (!normalised || seen.has(normalised)) continue;
+      seen.add(normalised);
+      values.push(normalised);
+    }
+    if (values.length > 0) return values;
+  }
+  if (typeof item.productType === "string") {
+    const normalised = item.productType.trim().toLowerCase();
+    if (normalised) return [normalised];
+  }
+  return [];
+}
+
+function sameMembership(current: readonly string[], desired: readonly string[]): boolean {
+  if (current.length !== desired.length) return false;
+  const present = new Set(current);
+  return desired.every((productType) => present.has(productType));
 }
 
 export function parseReclassifyArgs(argv: string[]): ParsedReclassifyArgs {
@@ -244,25 +284,33 @@ export async function reclassifyGalleryProductTypes(
         continue;
       }
 
-      const recognised = typeof item.caption === "string" ? recognisedProductType(item.caption) : null;
-      if (!recognised) {
+      const desired = typeof item.caption === "string" ? recognisedProductTypes(item.caption) : [];
+      if (desired.length === 0) {
         summary.skipped += 1;
         continue;
       }
 
       summary.eligible += 1;
-      const current = typeof item.productType === "string" ? item.productType : undefined;
-      if (current === recognised) {
+      const current = storedMembership(item);
+      if (sameMembership(current, desired)) {
         summary.unchanged += 1;
         continue;
       }
 
+      const currentSet = new Set(current);
+      const desiredSet = new Set<string>(desired);
+      const added = desired.filter((productType) => !currentSet.has(productType));
+      const removed = current.filter((productType) => !desiredSet.has(productType));
       summary.planned += 1;
-      summary.changes.push({ photoId, from: current, to: recognised });
+      summary.changes.push({ photoId, added, removed, productTypes: desired });
       if (!options.apply) continue;
 
       try {
-        await deps.updateProductType({ photoId, productType: recognised });
+        await deps.updateProductType({
+          photoId,
+          productType: desired[0] ?? "wedding-cake",
+          productTypes: desired,
+        });
         summary.updated += 1;
       } catch (error) {
         summary.failures.push(updateFailure(photoId, error));
@@ -331,7 +379,7 @@ async function createProductionClients(): Promise<ReclassifyClients> {
       const result = await documentClient.send(
         new ScanCommand({
           TableName: tableName,
-          ProjectionExpression: "photoId, caption, productType",
+          ProjectionExpression: "photoId, caption, productType, productTypes",
           ...(startKey ? { ExclusiveStartKey: startKey } : {}),
         })
       );
@@ -342,7 +390,9 @@ async function createProductionClients(): Promise<ReclassifyClients> {
     },
     updateProductType: async (update) => {
       await documentClient.send(
-        new UpdateCommand(buildProductTypeUpdate(tableName, update.photoId, update.productType))
+        new UpdateCommand(
+          buildProductTypeUpdate(tableName, update.photoId, update.productType, update.productTypes)
+        )
       );
     },
   };

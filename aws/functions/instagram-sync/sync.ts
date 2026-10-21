@@ -94,44 +94,206 @@ export type SyncSummary = {
   skipped: number;
 };
 
-/** Recognised Instagram hashtags (lowercase, without #) → canonical productType. */
-const HASHTAG_TO_PRODUCT_TYPE: Record<string, ProductType> = {
-  weddingcake: "wedding-cake",
-  "wedding-cake": "wedding-cake",
-  nikahcake: "nikah-cake",
-  nikkahcake: "nikah-cake",
-  "nikkah-cake": "nikah-cake",
-  "nikah-cake": "nikah-cake",
-  cupcakes: "cupcakes",
-  engagement: "engagement-cake",
-  engagementcake: "engagement-cake",
-  birthdaycake: "birthday-cake",
-  "birthday-cake": "birthday-cake",
-  anniversarycake: "anniversary-cake",
-  "anniversary-cake": "anniversary-cake",
-};
+/**
+ * Specific occasion stems. Combined with a cake or bake word, these classify
+ * a hashtag as celebratory even when that exact combination was never listed.
+ * "celebration" is not a stem. "#celebrationcake" is a generic cake tag, so it
+ * does not place a wedding cake in Celebratory Cakes.
+ * "nikah" does not match the spelling "nikkah", so both are listed.
+ */
+const CELEBRATORY_OCCASIONS = [
+  "birthday",
+  "anniversary",
+  "engagement",
+  "nikah",
+  "nikkah",
+  "christening",
+  "umrah",
+] as const;
 
 /**
- * The first recognised product-type hashtag in a caption.
- * Returns null when the caption has no recognised hashtag. mapToProductType
- * still falls back to wedding-cake for the scheduled sync.
+ * Occasion hashtags that qualify with no cake or bake word.
+ * Compared after hyphens and underscores are removed, so "#UmrahMubarak"
+ * and "#umrah-mubarak" share one spelling. "#birthdayparty" is not in this
+ * set: containing "birthday" is not enough.
  */
-export function recognisedProductType(caption?: string): ProductType | null {
-  if (!caption) return null;
+const STANDALONE_OCCASION_TAGS = new Set<string>([
+  ...CELEBRATORY_OCCASIONS,
+  "umrahmubarak",
+]);
 
-  const matches = caption.match(/#[\w-]+/g);
-  if (!matches) return null;
+/** Stable membership order written to gallery items. */
+const PRODUCT_TYPE_ORDER: readonly ProductType[] = [
+  "wedding-cake",
+  "cupcakes",
+  "celebratory-cakes",
+  "other-fun-bakes",
+];
 
-  for (const tag of matches) {
-    const productType = HASHTAG_TO_PRODUCT_TYPE[tag.slice(1).toLowerCase()];
-    if (productType) return productType;
-  }
+/** Instagram caption hashtags: a # followed by letters, digits, underscores, or hyphens. */
+const CAPTION_HASHTAG = /#[\w-]+/g;
 
+/**
+ * Lowercase a hashtag and drop an optional leading #.
+ * Caption scanning still requires the #; this only normalises a tag that was already found.
+ */
+export function normaliseHashtag(tag: string): string {
+  return tag.trim().replace(/^#+/, "").toLowerCase();
+}
+
+/**
+ * Join hyphenated and underscored forms with the unseparated spelling.
+ * "wedding-cakes", "wedding_cakes" and "weddingcakes" then share one shape.
+ */
+function collapseHashtag(normalised: string): string {
+  return normalised.replace(/[-_]/g, "");
+}
+
+/** Cupcake stem, including the plural. The cake inside this stem is not a separate cake. */
+function withoutCupcakes(collapsed: string): string {
+  return collapsed.replace(/cupcakes?/g, "");
+}
+
+function mentionsWedding(collapsed: string): boolean {
+  return collapsed.includes("wedding");
+}
+
+/** A cake word of its own. The cake inside "cupcake" does not count. */
+function mentionsCake(collapsed: string): boolean {
+  return withoutCupcakes(collapsed).includes("cake");
+}
+
+function mentionsCupcake(collapsed: string): boolean {
+  return collapsed.includes("cupcake");
+}
+
+/** A cake word of its own, or a bake word such as "bake" or "bakes". */
+function mentionsCakeOrBake(collapsed: string): boolean {
+  return mentionsCake(collapsed) || collapsed.includes("bake");
+}
+
+/**
+ * Celebratory when the whole tag is a known standalone occasion, or an
+ * occasion stem shares the tag with its own cake or bake word.
+ * "#birthdaycakes" and "#umrahcake" qualify. "#birthdayparty" does not.
+ */
+function mentionsOccasion(collapsed: string): boolean {
+  if (STANDALONE_OCCASION_TAGS.has(collapsed)) return true;
+  if (!mentionsCakeOrBake(collapsed)) return false;
+  return CELEBRATORY_OCCASIONS.some((occasion) => collapsed.includes(occasion));
+}
+
+/**
+ * Wedding cake when the collapsed hashtag contains both "wedding" and its own "cake".
+ * "#weddingexhibition" has wedding and no cake, so it does not match.
+ * "#weddingcupcakes" keeps the cupcake stem, so it is not a wedding cake.
+ */
+function isWeddingCakeHashtag(collapsed: string): boolean {
+  return mentionsWedding(collapsed) && mentionsCake(collapsed);
+}
+
+/**
+ * Generic cake or bake hashtag. Used only as a post-level fallback when
+ * nothing qualified for wedding cake, cupcakes, or celebratory cakes.
+ */
+function isGenericBakeHashtag(normalised: string): boolean {
+  return mentionsCakeOrBake(collapseHashtag(normalised));
+}
+
+/**
+ * Classify one hashtag, with or without a leading #.
+ * One hashtag receives one category: wedding cake, then cupcakes, then an
+ * occasion combined with cake or bake, or a standalone occasion tag.
+ * "#birthdaycupcakes" is cupcakes. "#birthdayparty" is not celebratory.
+ * A wedding-cake hashtag is not also celebratory. Generic maker, style,
+ * flavour, and appearance tags return null here.
+ */
+export function productTypeForHashtag(tag: string): ProductType | null {
+  const collapsed = collapseHashtag(normaliseHashtag(tag));
+  if (!collapsed) return null;
+  if (isWeddingCakeHashtag(collapsed)) return "wedding-cake";
+  if (mentionsCupcake(collapsed)) return "cupcakes";
+  if (mentionsOccasion(collapsed)) return "celebratory-cakes";
   return null;
 }
 
-export function mapToProductType(caption?: string): ProductType {
-  return recognisedProductType(caption) ?? "wedding-cake";
+/**
+ * Every product type matched by these hashtags, deduplicated, in canonical order.
+ * Hashtags are evaluated independently. A post can match more than one type.
+ */
+export function classifyHashtags(tags: readonly string[]): ProductType[] {
+  const matched = new Set<ProductType>();
+  for (const tag of tags) {
+    const productType = productTypeForHashtag(tag);
+    if (productType) matched.add(productType);
+  }
+  return PRODUCT_TYPE_ORDER.filter((productType) => matched.has(productType));
+}
+
+function hashtagsInCaption(caption?: string): string[] {
+  if (!caption) return [];
+  return caption.match(CAPTION_HASHTAG) ?? [];
+}
+
+/**
+ * Product types from hashtags in an Instagram caption.
+ * Specific categories win. Other Fun Bakes is added only when the post has
+ * no wedding, cupcake, or celebratory category and a hashtag contains
+ * "cake" or "bake". Prose is ignored. A caption with no such hashtag
+ * returns an empty list and is left unclassifiable.
+ */
+export function recognisedProductTypes(caption?: string): ProductType[] {
+  const tags = hashtagsInCaption(caption);
+  const specific = classifyHashtags(tags);
+  if (specific.length > 0) return specific;
+  const generic = tags.some((tag) => isGenericBakeHashtag(normaliseHashtag(tag)));
+  return generic ? ["other-fun-bakes"] : [];
+}
+
+/**
+ * Primary product type for the legacy productType attribute.
+ * Returns null when the caption is unclassifiable.
+ */
+export function recognisedProductType(caption?: string): ProductType | null {
+  return recognisedProductTypes(caption)[0] ?? null;
+}
+
+/** Primary type for a new sync. Unclassifiable captions return null. */
+export function mapToProductType(caption?: string): ProductType | null {
+  return recognisedProductType(caption);
+}
+
+/**
+ * Full membership for a new sync.
+ * Unclassifiable captions return an empty list. They are not filed as wedding cakes.
+ */
+export function mapToProductTypes(caption?: string): ProductType[] {
+  return recognisedProductTypes(caption);
+}
+
+/**
+ * Categories to store for one gallery item.
+ * A classifiable caption replaces the stored categories. productType is the
+ * first of productTypes. An unclassifiable caption does not assign wedding-cake:
+ * an existing category is kept, and a new post is stored with no category.
+ * The gallery then leaves that post out of every section.
+ */
+export function classificationForGalleryItem(
+  caption: string | undefined,
+  existing?: { productType?: ProductType; productTypes?: ProductType[] }
+): { productType?: ProductType; productTypes?: ProductType[] } {
+  const productTypes = mapToProductTypes(caption);
+  const productType = productTypes[0];
+  if (productType) return { productType, productTypes };
+  if (existing?.productType) {
+    return {
+      productType: existing.productType,
+      ...(existing.productTypes && existing.productTypes.length > 0
+        ? { productTypes: existing.productTypes }
+        : {}),
+    };
+  }
+  return {};
 }
 
 export async function runInstagramSync(deps: SyncDependencies): Promise<SyncSummary> {
@@ -696,14 +858,14 @@ async function processCarouselAlbum(
     throw new Error(`Carousel ${media.id} has no IMAGE children to sync`);
   }
 
-  const productType = mapToProductType(media.caption);
+  const classification = classificationForGalleryItem(media.caption, existing);
   const cover = mediaAssets[0];
   await deps.saveGalleryItem({
     photoId: media.id,
     backupUrl: cover.url,
     instagramUrl: media.permalink,
     caption: media.caption || "",
-    productType,
+    ...classification,
     likes: media.like_count || 0,
     syncedAt: deps.now().toISOString(),
     instagramTimestamp: media.timestamp,
@@ -732,7 +894,8 @@ async function processInstagramMedia(
     return "skipped";
   }
 
-  const existingUrl = storedImageUrl(await deps.loadGalleryItem(media.id));
+  const existing = await deps.loadGalleryItem(media.id);
+  const existingUrl = storedImageUrl(existing);
   if (!existingUrl && !media.media_url) {
     throw new Error(`No media_url found for ${media.id}`);
   }
@@ -740,13 +903,13 @@ async function processInstagramMedia(
   const uploaded = existingUrl
     ? { mediaId: media.id, s3Key: objectKeyFromUrl(existingUrl) ?? "", url: existingUrl }
     : await downloadAndUploadImage(media.id, media.media_url as string, deps);
-  const productType = mapToProductType(media.caption);
+  const classification = classificationForGalleryItem(media.caption, existing);
   await deps.saveGalleryItem({
     photoId: media.id,
     backupUrl: uploaded.url,
     instagramUrl: media.permalink,
     caption: media.caption || "",
-    productType,
+    ...classification,
     likes: media.like_count || 0,
     syncedAt: deps.now().toISOString(),
     instagramTimestamp: media.timestamp,

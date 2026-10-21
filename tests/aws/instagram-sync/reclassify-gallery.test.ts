@@ -35,6 +35,7 @@ type StoredRow = StoredGalleryProduct & {
   media?: Array<{ mediaId: string; s3Key: string; url: string }>;
   instagramTimestamp: string;
   syncedAt: string;
+  productTypes?: string[];
 };
 
 function row(photoId: string, caption: string, productType: string): StoredRow {
@@ -87,7 +88,12 @@ function harness(pages: StoredRow[][], target: ResolvedTarget = TARGET) {
       const items = (pages[index] ?? []).map((item) => {
         const stored = store.get(item.photoId as string);
         return stored
-          ? { photoId: stored.photoId, caption: stored.caption, productType: stored.productType }
+          ? {
+              photoId: stored.photoId,
+              caption: stored.caption,
+              productType: stored.productType,
+              productTypes: stored.productTypes,
+            }
           : item;
       });
       const next = index + 1;
@@ -104,7 +110,11 @@ function harness(pages: StoredRow[][], target: ResolvedTarget = TARGET) {
       if (failure) throw failure;
       const current = store.get(update.photoId);
       if (!current) throw namedError("ConditionalCheckFailedException", "The conditional request failed");
-      store.set(update.photoId, { ...current, productType: update.productType });
+      store.set(update.photoId, {
+        ...current,
+        productType: update.productType,
+        productTypes: update.productTypes,
+      });
     },
   };
 
@@ -178,6 +188,87 @@ describe("reclassify gallery command", () => {
     assert.equal(summary.updated, 0);
     assert.equal(summary.planned, 1);
     assert.equal(summary.ok, true);
+    assert.deepEqual(summary.changes, [
+      {
+        photoId: "birthday",
+        added: ["celebratory-cakes"],
+        removed: ["wedding-cake"],
+        productTypes: ["celebratory-cakes"],
+      },
+    ]);
+    assert.equal(env.store.get("birthday")?.productType, "wedding-cake");
+  });
+
+  it("dry-run reports cake migrations and leaves every row untouched", async () => {
+    const env = harness([
+      [
+        row("wedding", "#weddingcake #birthdaycake", "wedding-cake"),
+        row("wedding-hyphen", "Table cake #Wedding-Cake", "wedding-cake"),
+        row("wedding-compound", "#elegantweddingcake #luxuryweddingcake", "wedding-cake"),
+        row("cupcake", "#cupcake", "cupcakes"),
+        row("cupcakes", "#customcake #cupcakes", "cupcakes"),
+        row("birthday", "#birthdaycake", "birthday-cake"),
+        row("nikah", "#nikah-cake", "nikah-cake"),
+        row("engagement", "party #engagement", "engagement-cake"),
+        row("unseen", "#christeningcake", "wedding-cake"),
+        row("prose", "birthday cake with no hashtag", "anniversary-cake"),
+        row("other", "#macarons", "wedding-cake"),
+      ],
+    ]);
+
+    const result = await env.run(["node", "reclassify-gallery.cjs", "--dry-run"]);
+    const summary = summaryOf(env.stdout);
+
+    assert.equal(result.exitCode, 0);
+    assert.deepEqual(env.updates, []);
+    assert.equal(summary.mode, "dry-run");
+    assert.equal(summary.updated, 0);
+    assert.equal(summary.planned, 5);
+    assert.equal(summary.unchanged, 4);
+    assert.equal(summary.skipped, 2);
+    assert.deepEqual(summary.changes, [
+      {
+        photoId: "wedding",
+        added: ["celebratory-cakes"],
+        removed: [],
+        productTypes: ["wedding-cake", "celebratory-cakes"],
+      },
+      {
+        photoId: "birthday",
+        added: ["celebratory-cakes"],
+        removed: ["birthday-cake"],
+        productTypes: ["celebratory-cakes"],
+      },
+      {
+        photoId: "nikah",
+        added: ["celebratory-cakes"],
+        removed: ["nikah-cake"],
+        productTypes: ["celebratory-cakes"],
+      },
+      {
+        photoId: "engagement",
+        added: ["celebratory-cakes"],
+        removed: ["engagement-cake"],
+        productTypes: ["celebratory-cakes"],
+      },
+      {
+        photoId: "unseen",
+        added: ["celebratory-cakes"],
+        removed: ["wedding-cake"],
+        productTypes: ["celebratory-cakes"],
+      },
+    ]);
+    assert.equal(env.store.get("wedding")?.productType, "wedding-cake");
+    assert.equal(env.store.get("wedding-hyphen")?.productType, "wedding-cake");
+    assert.equal(env.store.get("wedding-compound")?.productType, "wedding-cake");
+    assert.equal(env.store.get("cupcake")?.productType, "cupcakes");
+    assert.equal(env.store.get("cupcakes")?.productType, "cupcakes");
+    assert.equal(env.store.get("birthday")?.productType, "birthday-cake");
+    assert.equal(env.store.get("nikah")?.productType, "nikah-cake");
+    assert.equal(env.store.get("engagement")?.productType, "engagement-cake");
+    assert.equal(env.store.get("unseen")?.productType, "wedding-cake");
+    assert.equal(env.store.get("prose")?.productType, "anniversary-cake");
+    assert.equal(env.store.get("other")?.productType, "wedding-cake");
   });
 
   it("apply checks account, region and table before scanning or updating", async () => {
@@ -189,7 +280,7 @@ describe("reclassify gallery command", () => {
     assert.deepEqual(env.calls, ["create", "resolve", "scan", "update:birthday"]);
     assert.ok(env.calls.indexOf("resolve") < env.calls.indexOf("scan"));
     assert.ok(env.calls.indexOf("scan") < env.calls.indexOf("update:birthday"));
-    assert.equal(env.store.get("birthday")?.productType, "birthday-cake");
+    assert.equal(env.store.get("birthday")?.productType, "celebratory-cakes");
   });
 
   it("aborts before the first scan when the confirmed target does not match", async () => {
@@ -242,16 +333,16 @@ describe("reclassify gallery command", () => {
     assert.deepEqual(env.startKeys, [undefined, { page: 1 }]);
     assert.equal(result.summary?.pages, 2);
     assert.equal(result.summary?.scanned, 2);
-    assert.equal(env.store.get("page-1")?.productType, "birthday-cake");
-    assert.equal(env.store.get("page-2")?.productType, "anniversary-cake");
+    assert.equal(env.store.get("page-1")?.productType, "celebratory-cakes");
+    assert.equal(env.store.get("page-2")?.productType, "celebratory-cakes");
   });
 
   it("does not downgrade unrecognised captions to wedding-cake", async () => {
     const env = harness([
       [
-        row("short", "#birthday", "cupcakes"),
+        row("short", "#sparklers", "cupcakes"),
         row("plain", "birthday cake", "cupcakes"),
-        row("unknown", "#not-a-cake", "cupcakes"),
+        row("unknown", "#macarons", "cupcakes"),
         row("empty", "", "anniversary-cake"),
         row("stored-cupcakes", "cupcakes for the table", "cupcakes"),
       ],
@@ -271,14 +362,51 @@ describe("reclassify gallery command", () => {
     assert.equal(env.store.get("empty")?.productType, "anniversary-cake");
   });
 
-  it("keeps the first recognised hashtag", async () => {
-    const env = harness([[row("mixed", "#weddingcake #birthdaycake", "birthday-cake")]]);
+  it("assigns every matching product type", async () => {
+    const env = harness([
+      [
+        row("all-three", "#cupcakes #birthdaycake #weddingcake", "birthday-cake"),
+        row("cupcakes-and-cake", "#anniversarycake #cupcakes", "anniversary-cake"),
+        row("celebratory", "#nikahcake #engagement", "nikah-cake"),
+        row("both", "#weddingcakeideas #cupcakes", "cupcakes"),
+      ],
+    ]);
 
     const result = await env.run(APPLY);
 
     assert.equal(result.exitCode, 0);
-    assert.equal(env.store.get("mixed")?.productType, "wedding-cake");
-    assert.deepEqual(env.updates, [{ photoId: "mixed", productType: "wedding-cake" }]);
+    assert.deepEqual(env.store.get("all-three")?.productTypes, [
+      "wedding-cake",
+      "cupcakes",
+      "celebratory-cakes",
+    ]);
+    assert.equal(env.store.get("all-three")?.productType, "wedding-cake");
+    assert.deepEqual(env.store.get("cupcakes-and-cake")?.productTypes, ["cupcakes", "celebratory-cakes"]);
+    assert.deepEqual(env.store.get("celebratory")?.productTypes, ["celebratory-cakes"]);
+    assert.deepEqual(env.store.get("both")?.productTypes, ["wedding-cake", "cupcakes"]);
+    assert.equal(env.store.get("both")?.productType, "wedding-cake");
+    assert.deepEqual(env.updates, [
+      {
+        photoId: "all-three",
+        productType: "wedding-cake",
+        productTypes: ["wedding-cake", "cupcakes", "celebratory-cakes"],
+      },
+      {
+        photoId: "cupcakes-and-cake",
+        productType: "cupcakes",
+        productTypes: ["cupcakes", "celebratory-cakes"],
+      },
+      {
+        photoId: "celebratory",
+        productType: "celebratory-cakes",
+        productTypes: ["celebratory-cakes"],
+      },
+      {
+        photoId: "both",
+        productType: "wedding-cake",
+        productTypes: ["wedding-cake", "cupcakes"],
+      },
+    ]);
   });
 
   it("reports a later update failure without hiding the earlier success", async () => {
@@ -296,7 +424,7 @@ describe("reclassify gallery command", () => {
     assert.equal(result.exitCode, 1);
     assert.equal(summary.ok, false);
     assert.equal(summary.updated, 1);
-    assert.equal(env.store.get("ok")?.productType, "birthday-cake");
+    assert.equal(env.store.get("ok")?.productType, "celebratory-cakes");
     assert.equal(env.store.get("bad")?.productType, "wedding-cake");
     assert.deepEqual(summary.failures, [
       {
@@ -326,7 +454,7 @@ describe("reclassify gallery command", () => {
     assert.equal(failures[0]?.photoId, "gone");
     assert.equal(failures[0]?.errorName, "ConditionalCheckFailedException");
     assert.match(failures[0]?.message ?? "", /Later rows are still processed/);
-    assert.equal(env.store.get("later")?.productType, "anniversary-cake");
+    assert.equal(env.store.get("later")?.productType, "celebratory-cakes");
     assert.equal(env.calls.includes("update:later"), true);
   });
 
@@ -348,7 +476,7 @@ describe("reclassify gallery command", () => {
     assert.equal(scanFailure.stage, "scan");
     assert.equal(scanFailure.errorName, "InternalServerError");
     assert.match(scanFailure.message, /remain applied/);
-    assert.equal(env.store.get("ok")?.productType, "birthday-cake");
+    assert.equal(env.store.get("ok")?.productType, "celebratory-cakes");
     assert.equal(env.store.get("unseen")?.productType, "wedding-cake");
   });
 
@@ -365,10 +493,79 @@ describe("reclassify gallery command", () => {
     assert.equal(second.summary?.unchanged, 1);
     assert.equal(second.summary?.planned, 0);
     assert.equal(env.updates.length, 1);
-    assert.equal(env.store.get("birthday")?.productType, "birthday-cake");
+    assert.equal(env.store.get("birthday")?.productType, "celebratory-cakes");
+    assert.deepEqual(env.store.get("birthday")?.productTypes, ["celebratory-cakes"]);
   });
 
-  it("updates only productType and keeps the photoId exactly as stored", async () => {
+  it("makes no further changes after a multi-category apply", async () => {
+    const env = harness([[row("all", "#weddingcake #cupcakes #birthdaycake #engagement", "wedding-cake")]]);
+
+    const first = await env.run(APPLY);
+    const second = await env.run(APPLY);
+
+    assert.equal(first.exitCode, 0);
+    assert.equal(first.summary?.updated, 1);
+    assert.equal(first.summary?.planned, 1);
+    assert.deepEqual(first.summary?.changes, [
+      {
+        photoId: "all",
+        added: ["cupcakes", "celebratory-cakes"],
+        removed: [],
+        productTypes: ["wedding-cake", "cupcakes", "celebratory-cakes"],
+      },
+    ]);
+    assert.equal(second.exitCode, 0);
+    assert.equal(second.summary?.planned, 0);
+    assert.equal(second.summary?.updated, 0);
+    assert.equal(second.summary?.unchanged, 1);
+    assert.equal(env.updates.length, 1);
+    assert.equal(env.store.get("all")?.productType, "wedding-cake");
+    assert.deepEqual(env.store.get("all")?.productTypes, [
+      "wedding-cake",
+      "cupcakes",
+      "celebratory-cakes",
+    ]);
+  });
+
+  it("dry-run leaves an already matching set untouched and reports crossovers", async () => {
+    const matched = row("matched", "#weddingcakeideas #cupcakes", "wedding-cake");
+    matched.productTypes = ["cupcakes", "wedding-cake"];
+    const env = harness([
+      [
+        matched,
+        row("sweet", "#sweetcelebrationsweddingcakes #cupcakes", "cupcakes"),
+        row("ideas", "#weddingcakeideas #cupcakes", "cupcakes"),
+        row("duplicate", "#Cupcakes #cupcake #CUPCAKES", "cupcakes"),
+      ],
+    ]);
+
+    const result = await env.run(["node", "reclassify-gallery.cjs", "--dry-run"]);
+    const summary = summaryOf(env.stdout);
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(summary.updated, 0);
+    assert.equal(summary.unchanged, 2);
+    assert.equal(summary.planned, 2);
+    assert.deepEqual(env.updates, []);
+    assert.equal(env.store.get("matched")?.productType, "wedding-cake");
+    assert.deepEqual(env.store.get("sweet")?.productTypes, undefined);
+    assert.deepEqual(summary.changes, [
+      {
+        photoId: "sweet",
+        added: ["wedding-cake"],
+        removed: [],
+        productTypes: ["wedding-cake", "cupcakes"],
+      },
+      {
+        photoId: "ideas",
+        added: ["wedding-cake"],
+        removed: [],
+        productTypes: ["wedding-cake", "cupcakes"],
+      },
+    ]);
+  });
+
+  it("updates only product membership and keeps the photoId exactly as stored", async () => {
     const photoId = " birthday ";
     const original = row(photoId, "#birthdaycake", "wedding-cake");
     const env = harness([[original]]);
@@ -376,9 +573,12 @@ describe("reclassify gallery command", () => {
     const result = await env.run(APPLY);
 
     assert.equal(result.exitCode, 0);
-    assert.deepEqual(env.updates, [{ photoId, productType: "birthday-cake" }]);
+    assert.deepEqual(env.updates, [
+      { photoId, productType: "celebratory-cakes", productTypes: ["celebratory-cakes"] },
+    ]);
     const stored = env.store.get(photoId);
-    assert.equal(stored?.productType, "birthday-cake");
+    assert.equal(stored?.productType, "celebratory-cakes");
+    assert.deepEqual(stored?.productTypes, ["celebratory-cakes"]);
     assert.equal(stored?.photoId, photoId);
     assert.equal(stored?.caption, original.caption);
     assert.equal(stored?.backupUrl, original.backupUrl);
@@ -387,12 +587,15 @@ describe("reclassify gallery command", () => {
     assert.equal(stored?.syncedAt, original.syncedAt);
     assert.deepEqual(stored?.media, original.media);
 
-    const command = buildProductTypeUpdate(TARGET.tableName, photoId, "birthday-cake");
+    const command = buildProductTypeUpdate(TARGET.tableName, photoId, "celebratory-cakes", ["celebratory-cakes"]);
     assert.deepEqual(command, {
       TableName: TARGET.tableName,
       Key: { photoId },
-      UpdateExpression: "SET productType = :productType",
-      ExpressionAttributeValues: { ":productType": "birthday-cake" satisfies ProductType },
+      UpdateExpression: "SET productType = :productType, productTypes = :productTypes",
+      ExpressionAttributeValues: {
+        ":productType": "celebratory-cakes" satisfies ProductType,
+        ":productTypes": ["celebratory-cakes"] satisfies ProductType[],
+      },
       ConditionExpression: "attribute_exists(photoId)",
     });
     assert.equal(JSON.stringify(command).includes("backupUrl"), false);

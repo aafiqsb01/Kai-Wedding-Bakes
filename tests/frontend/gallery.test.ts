@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { docClient, GALLERY_TABLE } from "../../src/lib/dynamodb";
 import { getGalleryCakes } from "../../src/lib/gallery";
-import { getGallerySections } from "../../src/lib/gallery-helpers";
+import { getFeaturedCommissions, getGallerySections } from "../../src/lib/gallery-helpers";
+import { formatProductTypeLabel } from "../../src/lib/product-type";
 import type { Cake } from "../../src/types";
 
 type ScanInput = {
@@ -275,6 +276,206 @@ describe("getGallerySections product type order", () => {
       sections.map((section) => section.productType),
       ["nikah-cake", "birthday-cake"]
     );
+  });
+
+  it("labels celebratory cakes for the gallery", () => {
+    assert.equal(formatProductTypeLabel("celebratory-cakes"), "Celebratory Cakes");
+
+    const sections = getGallerySections([
+      cake("c1", "celebratory-cakes", "2024-01-01T00:00:00.000Z"),
+    ]);
+
+    assert.equal(sections[0]?.productType, "celebratory-cakes");
+    assert.equal(sections[0]?.label, "Celebratory Cakes");
+  });
+
+  it("labels other fun bakes in the same gallery section shape", () => {
+    assert.equal(formatProductTypeLabel("other-fun-bakes"), "Other Fun Bakes");
+
+    const sections = getGallerySections([
+      cake("bake", "other-fun-bakes", "2024-03-01T00:00:00.000Z"),
+    ]);
+
+    assert.equal(sections.length, 1);
+    assert.equal(sections[0]?.productType, "other-fun-bakes");
+    assert.equal(sections[0]?.label, "Other Fun Bakes");
+    assert.equal(sections[0]?.items[0]?.id, "bake");
+    assert.equal(sections[0]?.items[0]?.imageUrl, "https://example.com/bake.jpg");
+  });
+
+  it("places one post in each of its categories without duplicating it inside a category", () => {
+    const both = cake("both", "wedding-cake", "2024-06-01T00:00:00.000Z");
+    both.productTypes = ["wedding-cake", "cupcakes", "wedding-cake"];
+    both.likes = 9;
+    const party = cake("party", "celebratory-cakes", "2024-05-01T00:00:00.000Z");
+
+    const sections = getGallerySections([both, both, party]);
+    const wedding = sections.find((section) => section.productType === "wedding-cake");
+    const cupcakes = sections.find((section) => section.productType === "cupcakes");
+    const celebratory = sections.find((section) => section.productType === "celebratory-cakes");
+
+    assert.deepEqual(wedding?.items.map((item) => item.id), ["both"]);
+    assert.deepEqual(cupcakes?.items.map((item) => item.id), ["both"]);
+    assert.deepEqual(celebratory?.items.map((item) => item.id), ["party"]);
+
+    const featured = getFeaturedCommissions([both, party]);
+    assert.deepEqual(
+      featured.map((item) => `${item.id}:${item.productType}`),
+      ["both:wedding-cake", "both:cupcakes", "party:celebratory-cakes"]
+    );
+  });
+
+  it("keeps every category combination and legacy rows, once per section", () => {
+    const at = "2024-01-01T00:00:00.000Z";
+    const wedding = cake("wedding", "wedding-cake", at);
+    const cupcakesOnly = cake("cupcakes", "cupcakes", at);
+    const celebratory = cake("celebratory", "celebratory-cakes", at);
+    const weddingCupcakes = cake("wedding-cupcakes", "wedding-cake", at);
+    weddingCupcakes.productTypes = ["wedding-cake", "cupcakes"];
+    const weddingCelebratory = cake("wedding-celebratory", "wedding-cake", at);
+    weddingCelebratory.productTypes = ["wedding-cake", "celebratory-cakes"];
+    const cupcakesCelebratory = cake("cupcakes-celebratory", "cupcakes", at);
+    cupcakesCelebratory.productTypes = ["cupcakes", "celebratory-cakes"];
+    const all = cake("all", "wedding-cake", at);
+    all.productTypes = ["wedding-cake", "cupcakes", "celebratory-cakes", "cupcakes"];
+    const legacy = cake("legacy", "birthday-cake", at);
+    const emptyList = cake("empty-list", "anniversary-cake", at);
+    emptyList.productTypes = [];
+    const primaryDisagrees = cake("primary-disagrees", "cupcakes", at);
+    primaryDisagrees.productTypes = ["wedding-cake"];
+
+    const sections = getGallerySections([
+      wedding,
+      cupcakesOnly,
+      celebratory,
+      weddingCupcakes,
+      weddingCelebratory,
+      cupcakesCelebratory,
+      all,
+      all,
+      legacy,
+      emptyList,
+      primaryDisagrees,
+    ]);
+
+    function ids(productType: string): string[] {
+      return (
+        sections.find((section) => section.productType === productType)?.items.map((item) => item.id) ?? []
+      ).slice().sort();
+    }
+
+    for (const section of sections) {
+      const seen = new Set<string>();
+      for (const item of section.items) {
+        assert.equal(seen.has(item.id), false, `${item.id} duplicated in ${section.productType}`);
+        seen.add(item.id);
+      }
+    }
+
+    assert.deepEqual(ids("wedding-cake"), [
+      "all",
+      "primary-disagrees",
+      "wedding",
+      "wedding-celebratory",
+      "wedding-cupcakes",
+    ]);
+    assert.deepEqual(ids("cupcakes"), [
+      "all",
+      "cupcakes",
+      "cupcakes-celebratory",
+      "wedding-cupcakes",
+    ]);
+    assert.deepEqual(ids("celebratory-cakes"), [
+      "all",
+      "celebratory",
+      "cupcakes-celebratory",
+      "wedding-celebratory",
+    ]);
+    assert.deepEqual(ids("birthday-cake"), ["legacy"]);
+    assert.deepEqual(ids("anniversary-cake"), ["empty-list"]);
+    assert.equal(ids("cupcakes").includes("primary-disagrees"), false);
+
+    const disagreed = sections
+      .find((section) => section.productType === "wedding-cake")
+      ?.items.find((item) => item.id === "primary-disagrees");
+    assert.equal(disagreed?.productType, "cupcakes");
+    assert.deepEqual(disagreed?.productTypes, ["wedding-cake"]);
+
+    const featured = getFeaturedCommissions([
+      wedding,
+      cupcakesOnly,
+      celebratory,
+      weddingCupcakes,
+      all,
+      legacy,
+      emptyList,
+    ]);
+    const featuredKeys = featured.map((item) => `${item.productType}:${item.id}`);
+    assert.equal(new Set(featuredKeys).size, featuredKeys.length);
+  });
+
+  it("reads productTypes from a gallery row and still accepts a single productType", async () => {
+    stubScan([
+      {
+        items: [
+          {
+            ...item("multi"),
+            productType: "wedding-cake",
+            productTypes: ["wedding-cake", "cupcakes", "wedding-cake"],
+          },
+          item("legacy"),
+        ],
+      },
+    ]);
+
+    const cakes = await getGalleryCakes();
+    assert.deepEqual(cakes[0]?.productTypes, ["wedding-cake", "cupcakes"]);
+    assert.equal(cakes[0]?.productType, "wedding-cake");
+    assert.equal(cakes[1]?.productTypes, undefined);
+    assert.equal(cakes[1]?.productType, "wedding-cake");
+
+    const sections = getGallerySections(cakes);
+    assert.deepEqual(
+      sections.find((section) => section.productType === "cupcakes")?.items.map((entry) => entry.id),
+      ["multi"]
+    );
+    assert.deepEqual(
+      sections.find((section) => section.productType === "wedding-cake")?.items.map((entry) => entry.id),
+      ["multi", "legacy"]
+    );
+  });
+
+  it("does not drop a row when productTypes is empty, and lets productTypes override the primary", async () => {
+    stubScan([
+      {
+        items: [
+          { ...item("legacy"), productType: "cupcakes" },
+          { ...item("empty"), productType: "wedding-cake", productTypes: [] },
+          {
+            ...item("override"),
+            productType: "cupcakes",
+            productTypes: ["wedding-cake", "celebratory-cakes"],
+          },
+        ],
+      },
+    ]);
+
+    const cakes = await getGalleryCakes();
+    assert.equal(cakes.map((entry) => entry.id).join(","), "legacy,empty,override");
+    assert.equal(cakes[0]?.productTypes, undefined);
+    assert.equal(cakes[0]?.productType, "cupcakes");
+    assert.equal(cakes[1]?.productTypes, undefined);
+    assert.equal(cakes[1]?.productType, "wedding-cake");
+    assert.equal(cakes[2]?.productType, "cupcakes");
+    assert.deepEqual(cakes[2]?.productTypes, ["wedding-cake", "celebratory-cakes"]);
+
+    const sections = getGallerySections(cakes);
+    function ids(productType: string): string[] {
+      return sections.find((section) => section.productType === productType)?.items.map((entry) => entry.id) ?? [];
+    }
+    assert.deepEqual(ids("cupcakes"), ["legacy"]);
+    assert.deepEqual(ids("wedding-cake"), ["empty", "override"]);
+    assert.deepEqual(ids("celebratory-cakes"), ["override"]);
   });
 
   it("omits product types that have no gallery items", () => {

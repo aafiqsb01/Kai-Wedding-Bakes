@@ -1,7 +1,7 @@
 import type { Cake } from "@/types";
 import {
   formatProductTypeLabel,
-  getProductTypeKey,
+  membershipOf,
 } from "@/lib/product-type";
 
 export const GALLERY_CAROUSEL_LIMIT = 12;
@@ -20,17 +20,19 @@ function isNewer(a: Cake, b: Cake): boolean {
   return sortTimestampOf(a) > sortTimestampOf(b);
 }
 
-/** Group cakes by productType (missing → "other"). */
+/** Group cakes by every product type they belong to. A post is added once per type. */
 export function groupByProductType(cakes: Cake[]): Map<string, Cake[]> {
   const groups = new Map<string, Cake[]>();
 
   for (const cake of cakes) {
-    const key = getProductTypeKey(cake.productType);
-    const existing = groups.get(key);
-    if (existing) {
-      existing.push(cake);
-    } else {
-      groups.set(key, [cake]);
+    for (const key of membershipOf(cake)) {
+      const existing = groups.get(key);
+      if (existing) {
+        if (existing.some((item) => item.id === cake.id)) continue;
+        existing.push(cake);
+      } else {
+        groups.set(key, [cake]);
+      }
     }
   }
 
@@ -103,30 +105,32 @@ export function getFeaturedCommissions(
   for (const cake of cakes) {
     if (!cake.imageUrl) continue;
 
-    const key = getProductTypeKey(cake.productType);
-    const current = bestByType.get(key);
+    for (const key of membershipOf(cake)) {
+      const current = bestByType.get(key);
 
-    if (!current) {
-      bestByType.set(key, cake);
-      continue;
-    }
+      if (!current) {
+        bestByType.set(key, cake);
+        continue;
+      }
 
-    const cakeLikes = likesOf(cake);
-    const currentLikes = likesOf(current);
+      const cakeLikes = likesOf(cake);
+      const currentLikes = likesOf(current);
 
-    if (
-      cakeLikes > currentLikes ||
-      (cakeLikes === currentLikes && isNewer(cake, current))
-    ) {
-      bestByType.set(key, cake);
+      if (
+        cakeLikes > currentLikes ||
+        (cakeLikes === currentLikes && isNewer(cake, current))
+      ) {
+        bestByType.set(key, cake);
+      }
     }
   }
 
-  return Array.from(bestByType.values())
-    .sort((a, b) => {
+  return Array.from(bestByType.entries())
+    .sort(([, a], [, b]) => {
       const byLikes = likesOf(b) - likesOf(a);
       if (byLikes !== 0) return byLikes;
       return sortTimestampOf(b).localeCompare(sortTimestampOf(a));
     })
-    .slice(0, limit);
+    .slice(0, limit)
+    .map(([productType, cake]) => ({ ...cake, productType }));
 }
