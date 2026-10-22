@@ -321,7 +321,7 @@ describe("getGallerySections product type order", () => {
     const featured = getFeaturedCommissions([both, party]);
     assert.deepEqual(
       featured.map((item) => `${item.id}:${item.productType}`),
-      ["both:wedding-cake", "both:cupcakes", "party:celebratory-cakes"]
+      ["both:wedding-cake", "party:celebratory-cakes"]
     );
   });
 
@@ -491,5 +491,319 @@ describe("getGallerySections product type order", () => {
       sections.some((section) => section.items.length === 0),
       false
     );
+  });
+});
+
+describe("Recent Commissions legacy product type", () => {
+  it("keeps a multi-category post in its singular productType and leaves other types their own commission", () => {
+    const mixed = cake("mixed", "wedding-cake", "2024-06-01T00:00:00.000Z");
+    mixed.productTypes = ["wedding-cake", "celebratory-cakes"];
+    mixed.likes = 50;
+    const quieterWedding = cake("quieter", "wedding-cake", "2024-01-01T00:00:00.000Z");
+    quieterWedding.likes = 1;
+    const cupcake = cake("cupcake", "cupcakes", "2024-03-01T00:00:00.000Z");
+    cupcake.likes = 2;
+    const party = cake("party", "celebratory-cakes", "2024-02-01T00:00:00.000Z");
+    party.likes = 3;
+
+    const featured = getFeaturedCommissions([mixed, quieterWedding, cupcake, party]);
+
+    assert.deepEqual(
+      featured.map((item) => `${item.productType}:${item.id}`),
+      ["wedding-cake:mixed", "celebratory-cakes:party", "cupcakes:cupcake"]
+    );
+    assert.equal(featured.filter((item) => item.id === "mixed").length, 1);
+    assert.equal(formatProductTypeLabel(featured[0]?.productType), "Wedding Cake");
+    assert.equal(formatProductTypeLabel(featured[1]?.productType), "Celebratory Cakes");
+    assert.equal(formatProductTypeLabel(featured[2]?.productType), "Cupcakes");
+    assert.equal(mixed.productType, "wedding-cake");
+    assert.deepEqual(mixed.productTypes, ["wedding-cake", "celebratory-cakes"]);
+
+    const sections = getGallerySections([mixed, quieterWedding, cupcake, party]);
+    assert.deepEqual(
+      sections.find((section) => section.productType === "wedding-cake")?.items.map((item) => item.id),
+      ["mixed", "quieter"]
+    );
+    assert.deepEqual(
+      sections.find((section) => section.productType === "celebratory-cakes")?.items.map((item) => item.id),
+      ["mixed", "party"]
+    );
+    assert.deepEqual(
+      sections.find((section) => section.productType === "cupcakes")?.items.map((item) => item.id),
+      ["cupcake"]
+    );
+  });
+
+  it("selects the most-liked post per product type and breaks ties with the newer post", () => {
+    const olderLikedLess = cake("older", "wedding-cake", "2024-01-01T00:00:00.000Z");
+    olderLikedLess.likes = 10;
+    const mostLiked = cake("liked", "wedding-cake", "2023-01-01T00:00:00.000Z");
+    mostLiked.likes = 21;
+    const tiedOlder = cake("tied-older", "cupcakes", "2024-01-01T00:00:00.000Z");
+    tiedOlder.likes = 5;
+    tiedOlder.syncedAt = "2026-01-01T00:00:00.000Z";
+    const tiedNewer = cake("tied-newer", "cupcakes", "2024-08-01T00:00:00.000Z");
+    tiedNewer.likes = 5;
+    tiedNewer.syncedAt = "2020-01-01T00:00:00.000Z";
+    const hidden = cake("hidden", "other-fun-bakes", "2024-09-01T00:00:00.000Z");
+    hidden.likes = 100;
+    hidden.imageUrl = "";
+    const bake = cake("bake", "other-fun-bakes", "2024-02-01T00:00:00.000Z");
+    bake.likes = 1;
+    const sameTypeDifferentCase = cake("cased", "Wedding-Cake", "2024-07-01T00:00:00.000Z");
+    sameTypeDifferentCase.likes = 20;
+
+    const featured = getFeaturedCommissions([
+      olderLikedLess,
+      mostLiked,
+      tiedOlder,
+      tiedNewer,
+      hidden,
+      bake,
+      sameTypeDifferentCase,
+    ]);
+
+    assert.deepEqual(
+      featured.map((item) => `${item.id}:${item.likes}`),
+      ["liked:21", "tied-newer:5", "bake:1"]
+    );
+    assert.equal(featured[0]?.productType, "wedding-cake");
+    assert.equal(featured.some((item) => item.id === "cased"), false);
+    assert.equal(formatProductTypeLabel(featured[2]?.productType), "Other Fun Bakes");
+  });
+
+  it("ranks product types by the winning post's likes and keeps the selection in memory", () => {
+    let dynamoCalls = 0;
+    docClient.send = (async () => {
+      dynamoCalls += 1;
+      throw new Error("DynamoDB should not be called");
+    }) as typeof docClient.send;
+
+    const cakes = [
+      cake("wedding", "wedding-cake", "2024-01-01T00:00:00.000Z"),
+      cake("cupcakes", "cupcakes", "2024-01-02T00:00:00.000Z"),
+      cake("party", "celebratory-cakes", "2024-01-03T00:00:00.000Z"),
+      cake("bake", "other-fun-bakes", "2024-01-04T00:00:00.000Z"),
+      cake("nikah", "nikah-cake", "2024-01-05T00:00:00.000Z"),
+      cake("engagement", "engagement-cake", "2024-01-06T00:00:00.000Z"),
+    ];
+    cakes[0]!.likes = 1;
+    cakes[1]!.likes = 6;
+    cakes[2]!.likes = 5;
+    cakes[3]!.likes = 4;
+    cakes[4]!.likes = 3;
+    cakes[5]!.likes = 2;
+    const multi = cakes[0]!;
+    multi.productTypes = ["wedding-cake", "celebratory-cakes"];
+
+    const featured = getFeaturedCommissions(cakes);
+
+    assert.equal(dynamoCalls, 0);
+    assert.equal(multi.productType, "wedding-cake");
+    assert.deepEqual(multi.productTypes, ["wedding-cake", "celebratory-cakes"]);
+    assert.deepEqual(
+      featured.map((item) => item.id),
+      ["cupcakes", "party", "bake", "nikah", "engagement"]
+    );
+    assert.equal(featured.some((item) => item.id === "wedding"), false);
+  });
+});
+
+describe("Recent Commissions legacy occasion hashtags", () => {
+  it("recovers birthday, anniversary and nikkah from exact celebratory hashtags", () => {
+    const birthday = cake("birthday", "celebratory-cakes", "2024-01-01T00:00:00.000Z");
+    birthday.description = "A day to remember #birthdaycake";
+    birthday.productTypes = ["celebratory-cakes"];
+    const anniversary = cake("anniversary", "celebratory-cakes", "2024-02-01T00:00:00.000Z");
+    anniversary.description = "#anniversarycake";
+    anniversary.productTypes = ["celebratory-cakes"];
+    const nikah = cake("nikah", "celebratory-cakes", "2024-03-01T00:00:00.000Z");
+    nikah.description = "#nikahcake";
+    nikah.productTypes = ["celebratory-cakes"];
+
+    const featured = getFeaturedCommissions([birthday, anniversary, nikah]);
+
+    assert.deepEqual(
+      featured.map((item) => `${item.id}:${formatProductTypeLabel(item.productType)}`),
+      [
+        "nikah:Nikkah Cake",
+        "anniversary:Anniversary Cake",
+        "birthday:Birthday Cake",
+      ]
+    );
+    assert.equal(birthday.productType, "celebratory-cakes");
+    assert.deepEqual(birthday.productTypes, ["celebratory-cakes"]);
+    assert.equal(anniversary.productType, "celebratory-cakes");
+    assert.equal(nikah.productType, "celebratory-cakes");
+    assert.notEqual(featured.find((item) => item.id === "birthday"), birthday);
+  });
+
+  it("matches complete hashtags case-insensitively and keeps the first legacy match", () => {
+    const cased = cake("cased", "celebratory-cakes", "2024-04-01T00:00:00.000Z");
+    cased.description = "See #NiKaHcAkE today";
+    const hyphenated = cake("hyphen", "celebratory-cakes", "2024-03-01T00:00:00.000Z");
+    hyphenated.description = "#anniversary-cake";
+    const nikkahSpelling = cake("spelling", "celebratory-cakes", "2024-02-01T00:00:00.000Z");
+    nikkahSpelling.description = "#nikkahcake";
+    const nikkahHyphen = cake("nikkah-hyphen", "celebratory-cakes", "2024-02-02T00:00:00.000Z");
+    nikkahHyphen.description = "#nikkah-cake";
+    const plural = cake("plural", "celebratory-cakes", "2024-01-01T00:00:00.000Z");
+    plural.description = "#birthdaycakes #luxurybirthdaycake";
+    const earlierCupcakes = cake("earlier", "celebratory-cakes", "2024-05-01T00:00:00.000Z");
+    earlierCupcakes.description = "#cupcakes #birthdaycake";
+    const earlierEngagement = cake("earlier-engagement", "celebratory-cakes", "2024-06-01T00:00:00.000Z");
+    earlierEngagement.description = "#engagement #birthdaycake";
+
+    function labelFor(item: Cake): string {
+      const featured = getFeaturedCommissions([item]);
+      return `${featured[0]?.id}:${formatProductTypeLabel(featured[0]?.productType)}`;
+    }
+
+    assert.equal(labelFor(cased), "cased:Nikkah Cake");
+    assert.equal(labelFor(hyphenated), "hyphen:Anniversary Cake");
+    assert.equal(labelFor(nikkahSpelling), "spelling:Nikkah Cake");
+    assert.equal(labelFor(nikkahHyphen), "nikkah-hyphen:Nikkah Cake");
+    assert.equal(labelFor(plural), "plural:Celebratory Cakes");
+    assert.equal(labelFor(earlierCupcakes), "earlier:Celebratory Cakes");
+    assert.equal(labelFor(earlierEngagement), "earlier-engagement:Celebratory Cakes");
+  });
+
+  it("leaves a celebratory post without a legacy occasion hashtag unchanged", () => {
+    const plain = cake("plain", "celebratory-cakes", "2024-01-01T00:00:00.000Z");
+    plain.description = "#umrahmubarak #customcakes";
+    plain.productTypes = ["celebratory-cakes"];
+    const before = {
+      productType: plain.productType,
+      productTypes: plain.productTypes,
+      description: plain.description,
+    };
+
+    const featured = getFeaturedCommissions([plain]);
+
+    assert.equal(featured[0], plain);
+    assert.equal(formatProductTypeLabel(featured[0]?.productType), "Celebratory Cakes");
+    assert.equal(plain.productType, before.productType);
+    assert.equal(plain.productTypes, before.productTypes);
+    assert.equal(plain.description, before.description);
+  });
+
+  it("keeps a wedding post in Wedding Cake when it also belongs to cupcakes", () => {
+    const wedding = cake("wedding", "wedding-cake", "2024-06-01T00:00:00.000Z");
+    wedding.description = "#cupcakes #birthdaycake";
+    wedding.productTypes = ["wedding-cake", "cupcakes"];
+    wedding.likes = 9;
+
+    const featured = getFeaturedCommissions([wedding]);
+    const sections = getGallerySections([wedding]);
+
+    assert.equal(featured.length, 1);
+    assert.equal(featured[0], wedding);
+    assert.equal(formatProductTypeLabel(featured[0]?.productType), "Wedding Cake");
+    assert.equal(wedding.productType, "wedding-cake");
+    assert.deepEqual(wedding.productTypes, ["wedding-cake", "cupcakes"]);
+    assert.deepEqual(
+      sections.find((section) => section.productType === "wedding-cake")?.items.map((item) => item.id),
+      ["wedding"]
+    );
+    assert.deepEqual(
+      sections.find((section) => section.productType === "cupcakes")?.items.map((item) => item.id),
+      ["wedding"]
+    );
+    assert.equal(
+      sections.some((section) => section.productType === "birthday-cake"),
+      false
+    );
+  });
+
+  it("keeps a cupcakes post as Cupcakes when its caption has a birthday hashtag", () => {
+    const cupcakes = cake("cupcakes", "cupcakes", "2024-03-01T00:00:00.000Z");
+    cupcakes.description = "#birthdaycake";
+    cupcakes.productTypes = ["cupcakes"];
+    const productTypes = cupcakes.productTypes;
+
+    const featured = getFeaturedCommissions([cupcakes]);
+
+    assert.equal(featured[0], cupcakes);
+    assert.equal(formatProductTypeLabel(featured[0]?.productType), "Cupcakes");
+    assert.equal(cupcakes.productType, "cupcakes");
+    assert.equal(cupcakes.productTypes, productTypes);
+    assert.deepEqual(cupcakes.productTypes, ["cupcakes"]);
+    assert.equal(cupcakes.description, "#birthdaycake");
+  });
+
+  it("picks the most-liked post in each derived category and orders the winners by likes", () => {
+    const birthdayOlder = cake("birthday-older", "celebratory-cakes", "2020-01-01T00:00:00.000Z");
+    birthdayOlder.description = "#birthdaycake";
+    birthdayOlder.likes = 40;
+    birthdayOlder.syncedAt = "2030-01-01T00:00:00.000Z";
+    const birthdayNewer = cake("birthday-newer", "celebratory-cakes", "2024-01-01T00:00:00.000Z");
+    birthdayNewer.description = "#birthday-cake";
+    birthdayNewer.likes = 40;
+    birthdayNewer.syncedAt = "2019-01-01T00:00:00.000Z";
+    const birthdayLess = cake("birthday-less", "celebratory-cakes", "2025-01-01T00:00:00.000Z");
+    birthdayLess.description = "#birthdaycake";
+    birthdayLess.likes = 12;
+    const anniversary = cake("anniversary", "celebratory-cakes", "2024-02-01T00:00:00.000Z");
+    anniversary.description = "#anniversarycake";
+    anniversary.likes = 30;
+    const wedding = cake("wedding", "wedding-cake", "2024-03-01T00:00:00.000Z");
+    wedding.likes = 20;
+    const cupcakes = cake("cupcakes", "cupcakes", "2024-04-01T00:00:00.000Z");
+    cupcakes.likes = 10;
+    const nikah = cake("nikah", "celebratory-cakes", "2024-05-01T00:00:00.000Z");
+    nikah.description = "#nikahcake";
+    nikah.likes = 5;
+    const plain = cake("plain", "celebratory-cakes", "2024-06-01T00:00:00.000Z");
+    plain.description = "#cakes";
+    plain.likes = 1;
+    const inputs = [birthdayOlder, birthdayNewer, birthdayLess, anniversary, wedding, cupcakes, nikah, plain];
+    const snapshot = inputs.map((item) => ({
+      id: item.id,
+      productType: item.productType,
+      productTypes: item.productTypes,
+      description: item.description,
+      likes: item.likes,
+    }));
+
+    const featured = getFeaturedCommissions(inputs);
+
+    assert.deepEqual(
+      featured.map((item) => `${item.productType}:${item.id}`),
+      [
+        "birthday-cake:birthday-newer",
+        "anniversary-cake:anniversary",
+        "wedding-cake:wedding",
+        "cupcakes:cupcakes",
+        "nikah-cake:nikah",
+      ]
+    );
+    assert.equal(featured.some((item) => item.id === "plain"), false);
+    assert.equal(featured.some((item) => item.id === "birthday-older"), false);
+    assert.deepEqual(
+      inputs.map((item) => ({
+        id: item.id,
+        productType: item.productType,
+        productTypes: item.productTypes,
+        description: item.description,
+        likes: item.likes,
+      })),
+      snapshot
+    );
+
+    const multi = cake("multi", "celebratory-cakes", "2024-07-01T00:00:00.000Z");
+    multi.description = "#birthdaycake";
+    multi.productTypes = ["celebratory-cakes", "cupcakes"];
+    const sections = getGallerySections([multi]);
+    assert.deepEqual(
+      sections.find((section) => section.productType === "celebratory-cakes")?.items.map((item) => item.id),
+      ["multi"]
+    );
+    assert.deepEqual(
+      sections.find((section) => section.productType === "cupcakes")?.items.map((item) => item.id),
+      ["multi"]
+    );
+    assert.equal(getFeaturedCommissions([multi])[0]?.productType, "birthday-cake");
+    assert.equal(multi.productType, "celebratory-cakes");
+    assert.deepEqual(multi.productTypes, ["celebratory-cakes", "cupcakes"]);
   });
 });
