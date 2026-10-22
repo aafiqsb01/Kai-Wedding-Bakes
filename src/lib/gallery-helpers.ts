@@ -1,6 +1,7 @@
 import type { Cake } from "@/types";
 import {
   formatProductTypeLabel,
+  getProductTypeKey,
   membershipOf,
 } from "@/lib/product-type";
 
@@ -18,6 +19,58 @@ function sortTimestampOf(cake: Cake): string {
 
 function isNewer(a: Cake, b: Cake): boolean {
   return sortTimestampOf(a) > sortTimestampOf(b);
+}
+
+/**
+ * Last single-category hashtag dictionary (exact token, first match wins).
+ * Plural and compound tags such as birthdaycakes are not entries.
+ */
+const LEGACY_HASHTAG_TO_PRODUCT_TYPE: Record<string, string> = {
+  weddingcake: "wedding-cake",
+  "wedding-cake": "wedding-cake",
+  nikahcake: "nikah-cake",
+  nikkahcake: "nikah-cake",
+  "nikah-cake": "nikah-cake",
+  "nikkah-cake": "nikah-cake",
+  cupcakes: "cupcakes",
+  engagement: "engagement-cake",
+  engagementcake: "engagement-cake",
+  birthdaycake: "birthday-cake",
+  "birthday-cake": "birthday-cake",
+  anniversarycake: "anniversary-cake",
+  "anniversary-cake": "anniversary-cake",
+};
+
+const RECENT_COMMISSION_OCCASIONS = new Set([
+  "birthday-cake",
+  "anniversary-cake",
+  "nikah-cake",
+]);
+
+/** First recognised legacy hashtag in a caption. Unrecognised captions return null. */
+function firstLegacyProductType(caption: string): string | null {
+  const tags = caption.match(/#[\w-]+/g);
+  if (!tags) return null;
+
+  for (const tag of tags) {
+    const productType = LEGACY_HASHTAG_TO_PRODUCT_TYPE[tag.slice(1).toLowerCase()];
+    if (productType) return productType;
+  }
+
+  return null;
+}
+
+/**
+ * Recent Commissions category. Celebratory posts recover birthday, anniversary,
+ * or nikkah when that is the caption's first exact legacy hashtag.
+ */
+function featuredProductType(cake: Cake): string {
+  const stored = getProductTypeKey(cake.productType);
+  if (stored !== "celebratory-cakes") return stored;
+
+  const legacy = firstLegacyProductType(cake.description);
+  if (legacy && RECENT_COMMISSION_OCCASIONS.has(legacy)) return legacy;
+  return stored;
 }
 
 /** Group cakes by every product type they belong to. A post is added once per type. */
@@ -93,8 +146,9 @@ export function getGallerySections(
 }
 
 /**
- * One most-liked item per product type, then take up to `limit`
- * product types ranked by likes.
+ * Recent Commissions only. One most-liked item per category, then up to
+ * `limit` categories ranked by likes. Celebratory posts can recover a legacy
+ * occasion from the caption. Other posts keep their singular productType.
  */
 export function getFeaturedCommissions(
   cakes: Cake[],
@@ -105,23 +159,22 @@ export function getFeaturedCommissions(
   for (const cake of cakes) {
     if (!cake.imageUrl) continue;
 
-    for (const key of membershipOf(cake)) {
-      const current = bestByType.get(key);
+    const key = featuredProductType(cake);
+    const current = bestByType.get(key);
 
-      if (!current) {
-        bestByType.set(key, cake);
-        continue;
-      }
+    if (!current) {
+      bestByType.set(key, cake);
+      continue;
+    }
 
-      const cakeLikes = likesOf(cake);
-      const currentLikes = likesOf(current);
+    const cakeLikes = likesOf(cake);
+    const currentLikes = likesOf(current);
 
-      if (
-        cakeLikes > currentLikes ||
-        (cakeLikes === currentLikes && isNewer(cake, current))
-      ) {
-        bestByType.set(key, cake);
-      }
+    if (
+      cakeLikes > currentLikes ||
+      (cakeLikes === currentLikes && isNewer(cake, current))
+    ) {
+      bestByType.set(key, cake);
     }
   }
 
@@ -132,5 +185,9 @@ export function getFeaturedCommissions(
       return sortTimestampOf(b).localeCompare(sortTimestampOf(a));
     })
     .slice(0, limit)
-    .map(([productType, cake]) => ({ ...cake, productType }));
+    .map(([productType, cake]) =>
+      getProductTypeKey(cake.productType) === productType
+        ? cake
+        : { ...cake, productType }
+    );
 }

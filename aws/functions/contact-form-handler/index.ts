@@ -160,8 +160,19 @@ const defaultDeps: ContactFormDeps = {
   createId: () => randomUUID(),
 };
 
+/** Fields read from API Gateway REST, HTTP API, and Function URL events. */
+type ContactFormEvent = {
+  body?: unknown;
+  isBase64Encoded?: boolean;
+  httpMethod?: string;
+  requestContext?: {
+    http?: { method?: string };
+    httpMethod?: string;
+  };
+};
+
 export async function processContactForm(
-  event: any,
+  event: ContactFormEvent,
   deps: ContactFormDeps = defaultDeps
 ): Promise<HandlerResponse> {
   console.log("Contact form handler Lambda started");
@@ -238,4 +249,5 @@ export async function processContactForm(
   }
 }
 
-export const handler: Handler = (event) => processContactForm(event);
+export const handler: Handler<ContactFormEvent, HandlerResponse> = (event) =>
+  processContactForm(event);
